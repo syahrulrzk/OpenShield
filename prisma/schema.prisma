@@ -1,0 +1,277 @@
+// OpenShield — Database Schema
+// Stack: PostgreSQL 16 + Prisma 6
+// Security: encrypted credentials, hash-chained audit log, RBAC
+// Monitoring: SSH events + DB login events (no query tracking — lightweight)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// USERS & AUTH
+// ============================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  role         UserRole @default(OWNER)
+  mfaSecret    String?  @map("mfa_secret") // TOTP, encrypted at rest
+  mfaEnabled   Boolean  @default(false) @map("mfa_enabled")
+  isActive     Boolean  @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  lastLoginIp  String?  @map("last_login_ip")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  assets      Asset[]
+  refreshTokens RefreshToken[]
+  auditLogs   AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+enum UserRole {
+  OWNER   // Full access, including user management
+  ADMIN   // Manage assets, alerts; view audit
+  VIEWER  // Read-only
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash") // SHA-256 of raw token
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  usedAt    DateTime? @map("used_at") // For rotation: set when token is exchanged for a new one
+  createdAt DateTime @default(now()) @map("created_at")
+  ip        String?
+  userAgent String?  @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+// ============================================================
+// ASSETS (servers being monitored)
+// ============================================================
+
+model Asset {
+  id           String     @id @default(cuid())
+  userId       String     @map("user_id")
+  hostname     String
+  publicIp     String?    @map("public_ip")
+  privateIp    String?    @map("private_ip")
+  os           String?    // e.g. "Ubuntu 24.04", "Debian 12"
+  kernel       String?    // e.g. "6.8.0-124-generic"
+  sshPort      Int        @default(22) @map("ssh_port")
+  sshUser      String?    @map("ssh_user")
+
+  // Database type being monitored
+  dbType       DbType     @default(NONE) @map("db_type")
+  // Connection details (filled when dbType != NONE)
+  dbHost       String?    @map("db_host")
+  dbPort       Int?       @map("db_port")
+  dbName       String?    @map("db_name")
+  dbUser       String?    @map("db_user")
+
+  status       AssetStatus @default(PENDING)
+  lastSeenAt   DateTime?  @map("last_seen_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sshCredentials AssetCredential? @relation("SshCred")
+  dbCredentials  AssetCredential? @relation("DbCred")
+  sshEvents      SshEvent[]
+  dbEvents       DbEvent[]
+  alerts         Alert[]
+
+  @@unique([userId, hostname])
+  @@index([userId])
+  @@index([status])
+  @@index([dbType])
+  @@map("assets")
+}
+
+enum AssetStatus {
+  PENDING  // Just added, not yet polled
+  ONLINE   // Last poll < 2 min ago
+  OFFLINE  // Last poll > 5 min ago
+  ERROR    // Last poll failed
+}
+
+enum DbType {
+  NONE
+  POSTGRES
+  MYSQL
+  SQLSERVER
+}
+
+// Encrypted credentials (SSH key + DB conn string) per asset
+// Decrypted server-side only, never sent to client
+model AssetCredential {
+  id             String   @id @default(cuid())
+  assetId        String   @unique @map("asset_id")
+  // Encrypted blob: iv (12B) + ciphertext + authTag (16B), base64 encoded
+  sshEncData     String?  @map("ssh_enc_data")
+  dbEncData      String?  @map("db_enc_data")
+  // Key version for rotation support
+  keyVersion     Int      @default(1) @map("key_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  asset  Asset @relation("SshCred", fields: [assetId], references: [id], onDelete: Cascade, map: "assetcred_ssh_asset_fkey")
+  asset2 Asset? @relation("DbCred", fields: [assetId], references: [id], onDelete: Cascade, map: "assetcred_db_asset_fkey")
+
+  @@map("asset_credentials")
+}
+
+// ============================================================
+// SSH EVENTS (login success/failed)
+// ============================================================
+
+model SshEvent {
+  id        String   @id @default(cuid())
+  assetId   String   @map("asset_id")
+  username  String   // user trying to log in
+  sourceIp  String   @map("source_ip")
+  status    SshStatus
+  method    String?  // e.g. "publickey", "password"
+  country   String?  // GeoIP later
+  eventTime DateTime @map("event_time")
+  raw       String?  // raw log line (for audit)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, eventTime])
+  @@index([sourceIp, eventTime])
+  @@index([status, eventTime])
+  @@map("ssh_events")
+}
+
+enum SshStatus {
+  SUCCESS
+  FAILED
+  INVALID  // invalid user
+}
+
+// ============================================================
+// DB EVENTS (login success/failed for Postgres/MySQL/SQLServer)
+// Lightweight: NO query text, just auth metadata
+// ============================================================
+
+model DbEvent {
+  id          String      @id @default(cuid())
+  assetId     String      @map("asset_id")
+  dbType      DbType      @map("db_type") // POSTGRES | MYSQL | SQLSERVER
+  username    String      // db user
+  sourceIp    String?     @map("source_ip")
+  database    String?     // db name (or default db)
+  status      DbEventStatus
+  eventTime   DateTime    @map("event_time")
+  raw         String?     // raw log line
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, eventTime])
+  @@index([username, eventTime])
+  @@index([sourceIp, eventTime])
+  @@index([status, eventTime])
+  @@index([dbType, eventTime])
+  @@map("db_events")
+}
+
+enum DbEventStatus {
+  SUCCESS   // login OK
+  FAILED    // auth failed
+  DENIED    // access denied (e.g. pg_hba.conf reject)
+}
+
+// ============================================================
+// ALERTS
+// ============================================================
+
+model Alert {
+  id          String      @id @default(cuid())
+  assetId     String?     @map("asset_id")
+  severity    AlertSeverity
+  title       String
+  description String      @db.Text
+  metadata    Json?       // { sourceIp, eventCount, window, etc. }
+  status      AlertStatus @default(OPEN)
+  resolvedAt  DateTime?   @map("resolved_at")
+  resolvedBy  String?     @map("resolved_by")
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  asset Asset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([severity, createdAt])
+  @@map("alerts")
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// ============================================================
+// AUDIT LOG (append-only, hash-chained for tamper detection)
+// ============================================================
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?  @map("user_id")
+  action       String   // e.g. "auth.login.success", "asset.create", "credential.view"
+  resourceType String?  @map("resource_type") // e.g. "asset", "user"
+  resourceId   String?  @map("resource_id")
+  ip           String?
+  userAgent    String?  @map("user_agent")
+  metadata     Json?
+  // Hash chain
+  prevHash     String?  @map("prev_hash") // hex SHA-256 of previous row
+  hash         String   // hex SHA-256 of (prevHash + row content)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+// ============================================================
+// SYSTEM SETTINGS (singleton, key-value)
+// ============================================================
+
+model SystemSetting {
+  key       String   @id
+  value     String   // JSON-encoded value
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("system_settings")
+}
