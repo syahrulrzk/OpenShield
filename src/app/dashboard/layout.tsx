@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/security/rbac";
 import { DashboardShell } from "./_components/dashboard-shell";
+import { PageTransition } from "@/components/animations";
 
 export default async function DashboardLayout({
   children,
@@ -14,7 +15,7 @@ export default async function DashboardLayout({
 
   return (
     <DashboardShell user={{ email: session.email, role: session.role }}>
-      {children}
+      <PageTransition>{children}</PageTransition>
     </DashboardShell>
   );
 }

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
   Server,
@@ -13,18 +14,96 @@ import {
   Menu,
   FileSpreadsheet,
   BarChart3,
+  Activity,
+  Database,
+  AppWindow,
+  Lock,
+  BellRing,
+  Radar,
+  User,
 } from "lucide-react";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { UserMenu } from "@/components/user-menu";
+import { PulseDot } from "@/components/animations";
+import { NotificationsBell } from "./notifications-bell";
 
-const nav = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
-  { href: "/dashboard/assets", label: "Assets", icon: Server },
-  { href: "/dashboard/events", label: "SSH Events", icon: Terminal },
-  { href: "/dashboard/alerts", label: "Alerts", icon: Bell },
-  { href: "/dashboard/reports", label: "Reports", icon: FileSpreadsheet, requiresRole: ["OWNER", "ADMIN"] as const },
-  { href: "/dashboard/analysis", label: "Analysis", icon: BarChart3, requiresRole: ["OWNER", "ADMIN"] as const },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings, requiresRole: ["OWNER", "ADMIN"] as const },
+type SubItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+  locked?: boolean;
+  badge?: string;
+};
+
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+  requiresRole?: readonly ("OWNER" | "ADMIN")[];
+  children?: SubItem[];
+};
+
+type NavGroup = {
+  label: string;
+  requiresRole?: readonly ("OWNER" | "ADMIN")[];
+  items: NavItem[];
+};
+
+const navGroups: NavGroup[] = [
+  {
+    label: "Overview",
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    ],
+  },
+  {
+    label: "Monitoring",
+    items: [
+      { href: "/dashboard/assets", label: "Assets", icon: Server },
+      {
+        href: "/dashboard/events",
+        label: "Events",
+        icon: Activity,
+        children: [
+          { href: "/dashboard/events", label: "SSH", icon: Terminal },
+          { href: "/dashboard/events/database", label: "Database", icon: Database },
+          {
+            href: "/dashboard/events/aplikasi",
+            label: "Aplikasi",
+            icon: AppWindow,
+            locked: true,
+            badge: "Soon",
+          },
+        ],
+      },
+      { href: "/dashboard/alerts", label: "Alerts", icon: Bell },
+      { href: "/dashboard/notifications", label: "Notifications", icon: BellRing },
+    ],
+  },
+  {
+    label: "Analytics",
+    requiresRole: ["OWNER", "ADMIN"] as const,
+    items: [
+      {
+        href: "/dashboard/reports",
+        label: "Reports",
+        icon: FileSpreadsheet,
+      },
+      { href: "/dashboard/analysis", label: "Analysis", icon: BarChart3 },
+    ],
+  },
+  {
+    label: "Admin",
+    requiresRole: ["OWNER", "ADMIN"] as const,
+    items: [
+      { href: "/dashboard/settings", label: "Settings", icon: Settings },
+    ],
+  },
+  {
+    label: "Account",
+    items: [
+      { href: "/dashboard/profile", label: "Profile", icon: User },
+    ],
+  },
 ];
 
 export function DashboardShell({
@@ -36,6 +115,11 @@ export function DashboardShell({
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close mobile sidebar on route change
   useEffect(() => {
@@ -52,131 +136,321 @@ export function DashboardShell({
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Lock body scroll when open
+  // Lock body scroll when open (smoother — use position:fixed trick)
   useEffect(() => {
     if (open) {
+      const scrollY = window.scrollY;
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${scrollY}px`;
+      document.body.style.width = "100%";
       document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
+      return () => {
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.width = "";
+        document.body.style.overflow = "";
+        window.scrollTo(0, scrollY);
+      };
     }
-    return () => {
-      document.body.style.overflow = "";
-    };
   }, [open]);
 
+  // Visible groups filtered by role
+  const visibleGroups = navGroups
+    .filter((g) => {
+      const groupRole = (g as any).requiresRole as
+        | readonly ("OWNER" | "ADMIN")[]
+        | undefined;
+      if (!groupRole) return true;
+      return groupRole.includes(user.role as "OWNER" | "ADMIN");
+    })
+    .map((g) => ({
+      ...g,
+      items: g.items.filter(
+        (i) =>
+          !i.requiresRole || i.requiresRole.includes(user.role as "OWNER" | "ADMIN"),
+      ),
+    }));
+
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-[var(--background)] border-r border-[var(--border)]">
+    <div className="relative flex flex-col h-full bg-[var(--background)] border-r border-[var(--accent-border)] overflow-hidden">
+      {/* === Login-style background: emerald grid + 2 radial glows === */}
+      <div
+        className="absolute inset-0 pointer-events-none opacity-60"
+        aria-hidden="true"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(16,185,129,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(16,185,129,0.06) 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
+      <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+        <div className="absolute -top-32 -left-32 w-[280px] h-[280px] rounded-full bg-[var(--accent)]/[0.08] blur-[80px]" />
+        <div className="absolute -bottom-32 -right-20 w-[260px] h-[260px] rounded-full bg-[var(--accent)]/[0.05] blur-[80px]" />
+      </div>
+
+      {/* Brand header */}
       <Link
         href="/dashboard"
-        className="flex items-center gap-2.5 px-5 h-16 border-b border-[var(--border)] shrink-0"
+        className="relative flex items-center gap-2.5 px-5 h-16 border-b border-[var(--border)] shrink-0 group"
       >
-        <div className="h-8 w-8 rounded-lg bg-white dark:bg-white text-black flex items-center justify-center glow">
+        <motion.div
+          whileHover={{ rotate: [0, -10, 10, 0] }}
+          transition={{ duration: 0.5 }}
+          className="h-8 w-8 rounded-lg bg-[var(--accent)] text-black flex items-center justify-center glow-emerald"
+        >
           <ShieldCheck className="h-4.5 w-4.5" strokeWidth={2.5} />
-        </div>
-        <div>
-          <div className="text-sm font-semibold tracking-tight">
-            OpenShield
-          </div>
-          <div className="text-[10px] text-[var(--muted-foreground)] tracking-wide uppercase">
+        </motion.div>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold tracking-tight">OpenShield</div>
+          <div className="text-[10px] text-[var(--muted-foreground)] tracking-wide uppercase flex items-center gap-1.5">
+            <PulseDot color="success" size="sm" />
             Security Monitor
           </div>
         </div>
       </Link>
 
-      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {nav
-          .filter((item) => !item.requiresRole || item.requiresRole.includes(user.role as "OWNER" | "ADMIN"))
-          .map((item) => {
-            const active =
-              item.href === "/dashboard"
-                ? pathname === "/dashboard"
-                : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
-                  active
-                    ? "bg-white/[0.06] text-[var(--foreground)] font-medium"
-                    : "text-[var(--muted)] hover:text-[var(--foreground)] hover:bg-white/[0.03]"
-                }`}
-              >
-                <item.icon
-                  className={`h-4 w-4 transition-transform ${
-                    active ? "scale-110" : "group-hover:scale-105"
-                  }`}
-                  strokeWidth={active ? 2.25 : 1.75}
-                />
-                {item.label}
-              </Link>
-            );
-          })}
+      {/* Nav groups */}
+      <nav className="relative flex-1 overflow-y-auto px-3 py-4">
+        {visibleGroups.map((group, gIdx) => (
+          <div key={group.label} className={gIdx > 0 ? "mt-5" : ""}>
+            <div className="px-3 mb-1.5 text-[10px] font-semibold tracking-[0.15em] uppercase text-[var(--muted-foreground)] flex items-center gap-1.5">
+              <Radar className="h-2.5 w-2.5 opacity-50" strokeWidth={2} />
+              {group.label}
+            </div>
+            <div className="space-y-0.5">
+              {group.items.map((item) => {
+                const isActive = (() => {
+                  if (item.children) {
+                    return pathname.startsWith(item.href);
+                  }
+                  return item.href === "/dashboard"
+                    ? pathname === "/dashboard"
+                    : pathname.startsWith(item.href);
+                })();
+                const Icon = item.icon;
+
+                return (
+                  <div key={item.href} className="space-y-0.5">
+                    <Link
+                      href={item.href}
+                      className={`group relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        isActive
+                          ? "text-[var(--foreground)] font-medium"
+                          : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                      }`}
+                    >
+                      {isActive && (
+                        <motion.span
+                          layoutId="nav-indicator"
+                          className="absolute inset-0 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent-border)]"
+                          transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                        />
+                      )}
+                      <Icon
+                        className={`relative h-4 w-4 transition-all ${
+                          isActive
+                            ? "scale-110 text-[var(--accent)]"
+                            : "group-hover:scale-105"
+                        }`}
+                        strokeWidth={isActive ? 2.25 : 1.75}
+                      />
+                      <span className="relative flex-1">{item.label}</span>
+                      {isActive && !item.children && (
+                        <motion.span
+                          layoutId="nav-dot"
+                          className="ml-auto h-1.5 w-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_8px_var(--accent-glow)]"
+                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                        />
+                      )}
+                    </Link>
+
+                    {/* Sub-menu */}
+                    <AnimatePresence initial={false}>
+                      {item.children && isActive && (
+                        <motion.div
+                          key="submenu"
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+                          className="overflow-hidden"
+                        >
+                          <div className="ml-4 pl-3 border-l border-[var(--border)] space-y-0.5 py-1">
+                            {item.children.map((sub) => {
+                              const subActive = pathname === sub.href;
+                              const SubIcon = sub.icon;
+                              if (sub.locked) {
+                                return (
+                                  <div
+                                    key={sub.href}
+                                    className="group flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs text-[var(--muted-foreground)] opacity-60 cursor-not-allowed"
+                                    title={`${sub.label} — coming soon`}
+                                  >
+                                    <Lock
+                                      className="h-3 w-3 shrink-0"
+                                      strokeWidth={1.75}
+                                    />
+                                    <span className="flex-1">{sub.label}</span>
+                                    {sub.badge && (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded font-mono uppercase tracking-wider bg-white/[0.04] text-[var(--muted-foreground)]">
+                                        {sub.badge}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return (
+                                <Link
+                                  key={sub.href}
+                                  href={sub.href}
+                                  className={`group relative flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs transition-colors ${
+                                    subActive
+                                      ? "text-[var(--accent)] font-medium bg-[var(--accent-soft)]"
+                                      : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.03]"
+                                  }`}
+                                >
+                                  <SubIcon
+                                    className={`h-3 w-3 ${
+                                      subActive ? "text-[var(--accent)]" : ""
+                                    }`}
+                                    strokeWidth={subActive ? 2.25 : 1.75}
+                                  />
+                                  <span className="flex-1">{sub.label}</span>
+                                  {subActive && (
+                                    <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
+                                  )}
+                                </Link>
+                              );
+                            })}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
-      <div className="p-4 border-t border-[var(--border)] shrink-0">
-        <div className="text-[10px] text-[var(--muted-foreground)] tracking-wider uppercase">
-          v0.1.0 · OWASP 2025
+      <div className="relative p-4 border-t border-[var(--border)] shrink-0">
+        <div className="text-[10px] text-[var(--muted-foreground)] tracking-wider uppercase flex items-center gap-1.5">
+          <span className="font-mono">v1.0.0</span>
+          <span>·</span>
+          <span>OWASP 2025</span>
         </div>
       </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen flex bg-[var(--background)] text-[var(--foreground)]">
+    <div className="min-h-screen flex bg-[var(--background)] text-[var(--foreground)] relative">
+      {/* Global dashboard background */}
+      <div
+        className="absolute inset-0 pointer-events-none opacity-30"
+        aria-hidden="true"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(16,185,129,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(16,185,129,0.04) 1px, transparent 1px)",
+          backgroundSize: "48px 48px",
+        }}
+      />
+
       {/* Desktop sidebar (md+) */}
-      <aside className="hidden md:flex md:flex-col w-60 shrink-0 sticky top-0 h-screen">
+      <aside className="hidden md:flex md:flex-col w-60 shrink-0 sticky top-0 h-screen relative z-20">
         {sidebarContent}
       </aside>
 
-      {/* Mobile sidebar (overlay) */}
-      {open && (
-        <>
-          <div
-            className="md:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-fade-in"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          <aside className="md:hidden fixed inset-y-0 left-0 z-50 w-72 animate-slide-in shadow-2xl">
-            {sidebarContent}
-          </aside>
-        </>
-      )}
+      {/* Mobile sidebar — smoother slide + blur backdrop */}
+      <AnimatePresence>
+        {open && (
+          <>
+            <motion.div
+              key="backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
+              onClick={() => setOpen(false)}
+              className="md:hidden fixed inset-0 z-40 bg-black/70 backdrop-blur-md"
+              aria-hidden="true"
+            />
+            <motion.aside
+              key="mobile-aside"
+              initial={{ x: "-105%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-105%" }}
+              transition={{
+                type: "spring",
+                stiffness: 300,
+                damping: 30,
+                mass: 0.8,
+              }}
+              className="md:hidden fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] shadow-[0_0_60px_rgba(0,0,0,0.5)]"
+            >
+              {sidebarContent}
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Main column */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 relative z-10">
         {/* Topbar */}
         <header className="h-16 border-b border-[var(--border)] bg-[var(--background)]/80 backdrop-blur-md sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <button
+            <motion.button
               type="button"
               onClick={() => setOpen(true)}
+              whileTap={{ scale: 0.92 }}
               className="md:hidden h-9 w-9 -ml-1 rounded-lg hover:bg-white/[0.05] flex items-center justify-center text-[var(--muted)] hover:text-[var(--foreground)]"
               aria-label="Open menu"
             >
               <Menu className="h-5 w-5" />
-            </button>
+            </motion.button>
             <div className="md:hidden flex items-center gap-2 min-w-0">
-              <ShieldCheck className="h-4 w-4 text-[var(--foreground)] shrink-0" strokeWidth={2.5} />
+              <ShieldCheck
+                className="h-4 w-4 text-[var(--accent)] shrink-0"
+                strokeWidth={2.5}
+              />
               <span className="text-sm font-semibold tracking-tight truncate">
                 OpenShield
               </span>
             </div>
-            <div className="hidden md:flex items-center gap-2 text-xs text-[var(--muted-foreground)] font-mono">
+            <motion.div
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.1 }}
+              className="hidden md:flex items-center gap-2 text-xs text-[var(--muted-foreground)] font-mono"
+            >
               <span className="text-[var(--foreground)]">{user.email}</span>
               <span>·</span>
-              <span className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-[var(--border)]">
+              <motion.span
+                whileHover={{ scale: 1.05 }}
+                className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-[var(--border)]"
+              >
                 {user.role}
-              </span>
-            </div>
+              </motion.span>
+            </motion.div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <ThemeToggle />
+            {mounted && <NotificationsBell />}
+            <div className="hidden sm:flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-[var(--border)] bg-white/[0.02]">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent)] opacity-75" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+              </span>
+              <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--accent)]">
+                Online
+              </span>
+            </div>
             <UserMenu user={user} />
           </div>
         </header>
 
         <main className="flex-1 overflow-auto">
-          <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">{children}</div>
+          <div className="w-full p-4 sm:p-6 lg:p-8">{children}</div>
         </main>
       </div>
     </div>

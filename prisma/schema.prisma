@@ -69,6 +69,10 @@ model RefreshToken {
 model Asset {
   id           String     @id @default(cuid())
   userId       String     @map("user_id")
+  // Top-level category: SSH | DATABASE | APP (apps = upcoming)
+  category     AssetCategory @default(SSH) @map("category")
+  // Deployment environment (PROD/STAGING/UAT/DEV/DR)
+  environment  Environment @default(PROD) @map("environment")
   hostname     String
   publicIp     String?    @map("public_ip")
   privateIp    String?    @map("private_ip")
@@ -77,9 +81,8 @@ model Asset {
   sshPort      Int        @default(22) @map("ssh_port")
   sshUser      String?    @map("ssh_user")
 
-  // Database type being monitored
+  // Database sub-type (only filled when category = DATABASE)
   dbType       DbType     @default(NONE) @map("db_type")
-  // Connection details (filled when dbType != NONE)
   dbHost       String?    @map("db_host")
   dbPort       Int?       @map("db_port")
   dbName       String?    @map("db_name")
@@ -100,8 +103,24 @@ model Asset {
   @@unique([userId, hostname])
   @@index([userId])
   @@index([status])
+  @@index([category])
   @@index([dbType])
+  @@index([environment])
   @@map("assets")
+}
+
+enum AssetCategory {
+  SSH       // SSH login monitoring
+  DATABASE  // Database login monitoring (Postgres/MySQL/SQLServer)
+  APP       // Application access monitoring (upcoming)
+}
+
+enum Environment {
+  PROD     // Production (live customer-facing)
+  STAGING  // Pre-production mirror
+  UAT      // User Acceptance Testing
+  DEV      // Development
+  DR       // Disaster Recovery
 }
 
 enum AssetStatus {

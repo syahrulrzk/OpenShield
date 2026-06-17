@@ -31,6 +31,9 @@ import {
   Cell,
   Legend,
 } from "recharts";
+import { motion } from "framer-motion";
+import { AnimatedNumber, StaggerContainer, StaggerItem, ChartReveal, PulseDot, FadeIn } from "@/components/animations";
+import { formatNumber, formatRelativeTime } from "@/lib/format";
 
 type Stats = Awaited<ReturnType<typeof import("../page").default>> extends React.ReactElement
   ? never
@@ -41,6 +44,7 @@ type DashboardStats = {
   onlineAssets: number;
   assetsByStatus: Record<string, number>;
   assetsByDbType: Record<string, number>;
+  assetsByEnvironment: Record<string, number>;
   sshSuccessToday: number;
   sshFailedToday: number;
   sshLast24h: number;
@@ -117,11 +121,19 @@ function StatCard({
   accent?: string;
 }) {
   return (
-    <div className="card-hover rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 relative overflow-hidden group">
+    <motion.div
+      whileHover={{ y: -2, scale: 1.005 }}
+      transition={{ type: "spring", stiffness: 400, damping: 25 }}
+      className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 relative overflow-hidden group cursor-default"
+    >
       <div className="flex items-start justify-between mb-3">
-        <div className="h-9 w-9 rounded-lg bg-white/[0.04] border border-[var(--border)] flex items-center justify-center group-hover:bg-white/[0.06]">
+        <motion.div
+          whileHover={{ rotate: 8, scale: 1.05 }}
+          transition={{ type: "spring", stiffness: 400 }}
+          className="h-9 w-9 rounded-lg bg-white/[0.04] border border-[var(--border)] flex items-center justify-center group-hover:bg-white/[0.06]"
+        >
           <Icon className="h-4 w-4" strokeWidth={1.75} />
-        </div>
+        </motion.div>
         {trend && (
           <div className="flex items-center gap-0.5 text-[10px] font-mono">
             {trend === "up" ? (
@@ -133,7 +145,11 @@ function StatCard({
         )}
       </div>
       <div className="text-2xl sm:text-3xl font-semibold tracking-tight tabular-nums">
-        {typeof value === "number" ? value.toLocaleString() : value}
+        {typeof value === "number" ? (
+          <AnimatedNumber value={value} duration={1.2} />
+        ) : (
+          value
+        )}
       </div>
       <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--muted-foreground)] mt-1.5">
         {label}
@@ -141,7 +157,7 @@ function StatCard({
       {sub && (
         <div className="text-[11px] text-[var(--muted)] mt-0.5 truncate">{sub}</div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -221,86 +237,148 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-end justify-between">
+      <FadeIn className="flex items-end justify-between">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
             Security Overview
           </h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            Real-time monitoring dari semua server & database yang lo kelola
+            Real-time monitoring dari semua server &amp; database yang lo kelola
           </p>
         </div>
         <div className="hidden sm:flex items-center gap-2 text-[10px] font-mono text-[var(--muted-foreground)]">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--success)] opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--success)]"></span>
-          </span>
+          <PulseDot color="success" />
           LIVE
         </div>
-      </div>
+      </FadeIn>
 
       {/* Stat cards row 1: Infrastructure */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        <StatCard
-          label="Total Assets"
-          value={stats.totalAssets}
-          sub={`${stats.onlineAssets} online`}
-          icon={Server}
-          trend="neutral"
-        />
-        <StatCard
-          label="SSH Today"
-          value={totalSshAuth}
-          sub={`${stats.sshSuccessToday} ✓ / ${stats.sshFailedToday} ✗`}
-          icon={Activity}
-          trend="neutral"
-        />
-        <StatCard
-          label="DB Logins Today"
-          value={totalDbAuth}
-          sub={`${stats.dbSuccessToday} ✓ / ${stats.dbFailedToday} ✗`}
-          icon={Database}
-          trend="neutral"
-        />
-        <StatCard
-          label="Open Alerts"
-          value={stats.openAlerts}
-          sub={stats.criticalAlerts > 0 ? `${stats.criticalAlerts} critical` : "all resolved"}
-          icon={AlertTriangle}
-          trend={stats.criticalAlerts > 0 ? "up" : "down"}
-        />
-      </div>
+      <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4" staggerDelay={0.06}>
+        <StaggerItem>
+          <StatCard
+            label="Total Assets"
+            value={stats.totalAssets}
+            sub={`${stats.onlineAssets} online`}
+            icon={Server}
+            trend="neutral"
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="SSH Today"
+            value={totalSshAuth}
+            sub={`${stats.sshSuccessToday} ✓ / ${stats.sshFailedToday} ✗`}
+            icon={Activity}
+            trend="neutral"
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="DB Logins Today"
+            value={totalDbAuth}
+            sub={`${stats.dbSuccessToday} ✓ / ${stats.dbFailedToday} ✗`}
+            icon={Database}
+            trend="neutral"
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="Open Alerts"
+            value={stats.openAlerts}
+            sub={stats.criticalAlerts > 0 ? `${stats.criticalAlerts} critical` : "all resolved"}
+            icon={AlertTriangle}
+            trend={stats.criticalAlerts > 0 ? "up" : "down"}
+          />
+        </StaggerItem>
+      </StaggerContainer>
 
       {/* Stat cards row 2: DB types + SSH + DB success rate */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        <StatCard
-          label="SSH Success"
-          value={stats.sshSuccessToday}
-          sub="logins today"
-          icon={CheckCircle2}
-        />
-        <StatCard
-          label="SSH Failed"
-          value={stats.sshFailedToday}
-          sub="attempts today"
-          icon={XCircle}
-        />
-        <StatCard
-          label="DB Success"
-          value={stats.dbSuccessToday}
-          sub={`${dbTypeTotal > 0 ? Object.keys(stats.assetsByDbType).length : 0} db types`}
-          icon={CheckCircle2}
-        />
-        <StatCard
-          label="DB Failed"
-          value={stats.dbFailedToday}
-          sub="attempts today"
-          icon={XCircle}
-        />
-      </div>
+      <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4" staggerDelay={0.06}>
+        <StaggerItem>
+          <StatCard
+            label="SSH Success"
+            value={stats.sshSuccessToday}
+            sub="logins today"
+            icon={CheckCircle2}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="SSH Failed"
+            value={stats.sshFailedToday}
+            sub="attempts today"
+            icon={XCircle}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="DB Success"
+            value={stats.dbSuccessToday}
+            sub={`${dbTypeTotal > 0 ? Object.keys(stats.assetsByDbType).length : 0} db types`}
+            icon={CheckCircle2}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <StatCard
+            label="DB Failed"
+            value={stats.dbFailedToday}
+            sub="attempts today"
+            icon={XCircle}
+          />
+        </StaggerItem>
+      </StaggerContainer>
+
+      {/* Environment breakdown */}
+      <StaggerContainer className="grid grid-cols-2 sm:grid-cols-5 gap-3" staggerDelay={0.04}>
+        {([
+          { id: "PROD", label: "Production", color: "#ef4444", icon: Globe },
+          { id: "STAGING", label: "Staging", color: "#f97316", icon: Globe },
+          { id: "UAT", label: "UAT", color: "#3b82f6", icon: Globe },
+          { id: "DEV", label: "Dev", color: "#10b981", icon: Globe },
+          { id: "DR", label: "DR", color: "#a855f7", icon: Globe },
+        ] as const).map((env) => {
+          const count = stats.assetsByEnvironment[env.id] || 0;
+          const Icon = env.icon;
+          return (
+            <StaggerItem key={env.id}>
+              <div
+                className="rounded-xl border bg-[var(--surface)] p-4 relative overflow-hidden transition-all hover:border-opacity-60"
+                style={{ borderColor: `${env.color}30` }}
+              >
+                <div
+                  className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-10 blur-2xl"
+                  style={{ backgroundColor: env.color }}
+                />
+                <div className="relative">
+                  <div className="flex items-center justify-between mb-2">
+                    <div
+                      className="h-7 w-7 rounded-lg flex items-center justify-center"
+                      style={{ backgroundColor: `${env.color}15`, border: `1px solid ${env.color}40` }}
+                    >
+                      <Icon className="h-3.5 w-3.5" strokeWidth={2} style={{ color: env.color }} />
+                    </div>
+                    <span
+                      className="text-[9px] font-mono font-semibold tracking-wider"
+                      style={{ color: env.color }}
+                    >
+                      {env.id}
+                    </span>
+                  </div>
+                  <div className="text-2xl font-semibold font-mono tabular-nums">
+                    {count}
+                  </div>
+                  <div className="text-[10px] text-[var(--muted-foreground)] mt-0.5">
+                    {env.label} {count === 1 ? "asset" : "assets"}
+                  </div>
+                </div>
+              </div>
+            </StaggerItem>
+          );
+        })}
+      </StaggerContainer>
 
       {/* Time series chart */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+      <ChartReveal className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6" delay={0.2}>
         <SectionHeader
           title="Auth Events — Last 24h"
           sub="Per-jam, success vs failed (SSH + DB)"
@@ -365,12 +443,13 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
             </ResponsiveContainer>
           </div>
         )}
-      </div>
+      </ChartReveal>
 
       {/* Two-column: Top attackers + Status/DB type distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+      <StaggerContainer className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6" staggerDelay={0.1}>
         {/* Top SSH attackers */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Top SSH Attackers"
             sub="Failed logins, 7 days"
@@ -409,10 +488,12 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               ))}
             </div>
           )}
-        </div>
+        </motion.div>
+        </StaggerItem>
 
         {/* Top DB attackers */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Top DB Attackers"
             sub="Failed logins, 7 days"
@@ -462,10 +543,12 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               ))}
             </div>
           )}
-        </div>
+        </motion.div>
+        </StaggerItem>
 
         {/* Asset status pie */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Asset Status"
             sub={`${stats.totalAssets} total`}
@@ -520,13 +603,15 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               </div>
             </div>
           )}
-        </div>
-      </div>
+        </motion.div>
+        </StaggerItem>
+      </StaggerContainer>
 
       {/* DB type + Severity + Recent activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+      <StaggerContainer className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6" staggerDelay={0.1}>
         {/* DB Type distribution */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader title="Database Types" sub="Connected DBs" />
           {dbTypeData.length === 0 ? (
             <div className="text-center py-8 text-xs text-[var(--muted-foreground)]">
@@ -562,10 +647,12 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               ))}
             </div>
           )}
-        </div>
+        </motion.div>
+        </StaggerItem>
 
         {/* Alert severity */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Alert Severity"
             sub="Open alerts"
@@ -600,10 +687,12 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               </ResponsiveContainer>
             </div>
           )}
-        </div>
+        </motion.div>
+        </StaggerItem>
 
         {/* Recent activity feed */}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <StaggerItem>
+        <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Recent Activity"
             sub="Latest 8 events"
@@ -621,15 +710,17 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
                 const dbType = isDb ? (e as { dbType: string }).dbType : null;
                 const isFailed = e.status !== "SUCCESS";
                 return (
-                  <div
+                  <motion.div
                     key={e.id}
+                    whileHover={{ x: 2 }}
+                    transition={{ type: "spring", stiffness: 400, damping: 25 }}
                     className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors"
                   >
-                    <div
-                      className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                        isFailed ? "bg-[var(--danger)]" : "bg-[var(--success)]"
-                      }`}
-                    />
+                    {isFailed ? (
+                      <PulseDot color="danger" size="sm" ping={false} />
+                    ) : (
+                      <span className="h-1.5 w-1.5 rounded-full shrink-0 bg-[var(--success)]" />
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="text-[11px] truncate">
                         <span className="font-mono">{e.username}</span>
@@ -646,7 +737,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
                         <code className="font-mono">{e.sourceIp}</code>
                         <span>·</span>
                         <Clock className="h-2.5 w-2.5" />
-                        <span>{timeAgo(e.eventTime)}</span>
+                        <span>{formatRelativeTime(e.eventTime)}</span>
                       </div>
                     </div>
                     <span
@@ -658,7 +749,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
                     >
                       {isFailed ? "fail" : "ok"}
                     </span>
-                  </div>
+                  </motion.div>
                 );
               })}
             {stats.recentSsh.length === 0 && stats.recentDb.length === 0 && (
@@ -667,8 +758,9 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               </div>
             )}
           </div>
-        </div>
-      </div>
+        </motion.div>
+        </StaggerItem>
+      </StaggerContainer>
     </div>
   );
 }

@@ -17,14 +17,20 @@ import { z } from "zod";
 
 const createSchema = z
   .object({
+    // Top-level category: SSH | DATABASE | APP (APP not yet supported)
+    category: z.enum(["SSH", "DATABASE", "APP"]).default("SSH"),
+    // Deployment environment
+    environment: z.enum(["PROD", "STAGING", "UAT", "DEV", "DR"]).default("PROD"),
     hostname: z.string().min(1).max(255),
+
+    // SSH fields
     sshUser: z.string().max(64).optional(),
     sshPort: z.number().int().min(1).max(65535).default(22),
     sshKey: z.string().optional(),
     sshPassword: z.string().optional(),
     sshAuthType: z.enum(["key", "password"]).default("key"),
 
-    // Database type (POSTGRES | MYSQL | SQLSERVER | NONE)
+    // DB sub-type (only required when category = DATABASE)
     dbType: z.enum(["NONE", "POSTGRES", "MYSQL", "SQLSERVER"]).default("NONE"),
     dbHost: z.string().max(255).optional(),
     dbPort: z.number().int().min(1).max(65535).optional(),
@@ -33,26 +39,54 @@ const createSchema = z
     dbPassword: z.string().optional(),
   })
   .refine(
+    (d) => d.category !== "APP",
+    { message: "Akses Apps belum tersedia", path: ["category"] },
+  )
+  .refine(
     (d) =>
-      d.dbType === "NONE" ||
-      (d.dbHost && d.dbName && d.dbUser && d.dbPassword),
-    { message: "DB credentials incomplete", path: ["dbPassword"] }
+      d.category !== "DATABASE" ||
+      (d.dbType !== "NONE" && d.dbHost && d.dbName && d.dbUser && d.dbPassword),
+    { message: "DB credentials incomplete", path: ["dbPassword"] },
+  )
+  .refine(
+    (d) =>
+      d.category !== "SSH" ||
+      !d.sshUser ||
+      d.sshKey ||
+      d.sshPassword,
+    { message: "SSH user tanpa key/password", path: ["sshKey"] },
   );
 
-export async function GET() {
+export async function GET(req: Request) {
   const auth = await requireRole(...PERMISSIONS.ASSET_READ);
   if (auth instanceof Response) return auth;
 
+  // Optional ?category=SSH|DATABASE|APP filter
+  const url = new URL(req.url);
+  const cat = url.searchParams.get("category");
+  const env = url.searchParams.get("environment");
+  const where: any = { userId: auth.userId };
+  if (cat && ["SSH", "DATABASE", "APP"].includes(cat)) {
+    where.category = cat;
+  }
+  if (env && ["PROD", "STAGING", "UAT", "DEV", "DR"].includes(env)) {
+    where.environment = env;
+  }
+
   const assets = await prisma.asset.findMany({
-    where: { userId: auth.userId },
+    where,
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
+      category: true,
+      environment: true,
       hostname: true,
       publicIp: true,
       privateIp: true,
       os: true,
       kernel: true,
+      sshPort: true,
+      sshUser: true,
       dbType: true,
       dbHost: true,
       dbPort: true,
@@ -83,10 +117,6 @@ export async function POST(req: Request) {
   }
   const data = parsed.data;
 
-  if (data.sshUser && !data.sshKey && !data.sshPassword) {
-    return Response.json({ error: "SSH user tanpa key/password" }, { status: 400 });
-  }
-
   const existing = await prisma.asset.findUnique({
     where: { userId_hostname: { userId: auth.userId, hostname: data.hostname } },
   });
@@ -96,28 +126,32 @@ export async function POST(req: Request) {
 
   // Encrypt SSH credential
   const sshEncData =
-    data.sshAuthType === "key" && data.sshKey
+    data.category === "SSH" && data.sshAuthType === "key" && data.sshKey
       ? encrypt(data.sshKey)
-      : data.sshAuthType === "password" && data.sshPassword
+      : data.category === "SSH" && data.sshAuthType === "password" && data.sshPassword
         ? encrypt(data.sshPassword)
         : null;
 
-  // Encrypt DB credential (we store just the password — other details are on the asset row)
+  // Encrypt DB credential
   const dbEncData =
-    data.dbType !== "NONE" && data.dbPassword ? encrypt(data.dbPassword) : null;
+    data.category === "DATABASE" && data.dbPassword
+      ? encrypt(data.dbPassword)
+      : null;
 
   const asset = await prisma.$transaction(async (tx) => {
     const a = await tx.asset.create({
       data: {
         userId: auth.userId,
+        category: data.category,
+        environment: data.environment,
         hostname: data.hostname,
-        sshPort: data.sshPort,
-        sshUser: data.sshUser,
-        dbType: data.dbType,
-        dbHost: data.dbType !== "NONE" ? data.dbHost : null,
-        dbPort: data.dbType !== "NONE" ? data.dbPort : null,
-        dbName: data.dbType !== "NONE" ? data.dbName : null,
-        dbUser: data.dbType !== "NONE" ? data.dbUser : null,
+        sshPort: data.category === "DATABASE" ? 22 : data.sshPort,
+        sshUser: data.category === "DATABASE" ? null : data.sshUser,
+        dbType: data.category === "DATABASE" ? data.dbType : "NONE",
+        dbHost: data.category === "DATABASE" ? data.dbHost : null,
+        dbPort: data.category === "DATABASE" ? data.dbPort : null,
+        dbName: data.category === "DATABASE" ? data.dbName : null,
+        dbUser: data.category === "DATABASE" ? data.dbUser : null,
         status: "PENDING",
       },
     });
@@ -142,6 +176,8 @@ export async function POST(req: Request) {
     userAgent: ua,
     metadata: {
       hostname: data.hostname,
+      category: data.category,
+      environment: data.environment,
       ssh: !!sshEncData,
       dbType: data.dbType,
     },

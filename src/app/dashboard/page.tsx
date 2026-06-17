@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
 import { startOfDay, subDays, subHours } from "date-fns";
 import { DashboardClient } from "./_components/dashboard-client";
+import { redirect } from "next/navigation";
 
 async function getStats(userId: string) {
   const now = new Date();
@@ -15,6 +16,7 @@ async function getStats(userId: string) {
     onlineAssets,
     assetsByStatus,
     assetsByDbType,
+    assetsByEnvironment,
     // SSH stats
     sshSuccessToday,
     sshFailedToday,
@@ -45,6 +47,7 @@ async function getStats(userId: string) {
     prisma.asset.count({ where: { userId, status: "ONLINE" } }),
     prisma.asset.groupBy({ by: ["status"], where: { userId }, _count: { status: true } }),
     prisma.asset.groupBy({ by: ["dbType"], where: { userId, NOT: { dbType: "NONE" } }, _count: { dbType: true } }),
+    prisma.asset.groupBy({ by: ["environment"], where: { userId }, _count: { environment: true } }),
 
     prisma.sshEvent.count({ where: { asset: { userId }, status: "SUCCESS", eventTime: { gte: today } } }),
     prisma.sshEvent.count({ where: { asset: { userId }, status: { in: ["FAILED", "INVALID"] }, eventTime: { gte: today } } }),
@@ -127,6 +130,7 @@ async function getStats(userId: string) {
     onlineAssets,
     assetsByStatus: Object.fromEntries(assetsByStatus.map((s) => [s.status, s._count.status])),
     assetsByDbType: Object.fromEntries(assetsByDbType.map((d) => [d.dbType, d._count.dbType])),
+    assetsByEnvironment: Object.fromEntries(assetsByEnvironment.map((e) => [e.environment, e._count.environment])),
     // SSH
     sshSuccessToday,
     sshFailedToday,
@@ -178,7 +182,7 @@ async function getStats(userId: string) {
 
 export default async function DashboardHome() {
   const session = await getSession();
-  if (!session) return null;
+  if (!session) redirect("/login");
 
   const stats = await getStats(session.userId);
 

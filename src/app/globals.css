@@ -1,38 +1,34 @@
 @import "tailwindcss";
 
-/* === Next.js-style theme: pure black, smooth, minimal === */
+/* === OpenShield theme: pure black + emerald accent (security platform) === */
 :root {
-  --background: #ffffff;
-  --foreground: #0a0a0a;
-  --surface: #fafafa;
-  --surface-2: #f4f4f5;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.12);
-  --muted: #71717a;
-  --muted-foreground: #a1a1aa;
-  --accent: #0a0a0a;
-  --accent-foreground: #fafafa;
-  --ring: rgba(0, 0, 0, 0.5);
-  --grid-color: rgba(0, 0, 0, 0.04);
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --info: #3b82f6;
-}
-
-.dark {
-  --background: #000000;
+  /* Surfaces (pure black, no grey) */
+  --background: #0a0a0a;
   --foreground: #fafafa;
-  --surface: #0a0a0a;
+  --surface: #0d0d0d;
   --surface-2: #111111;
-  --border: rgba(255, 255, 255, 0.08);
+
+  /* Borders (subtle white) */
+  --border: rgba(255, 255, 255, 0.06);
   --border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Muted text */
   --muted: #a1a1aa;
   --muted-foreground: #71717a;
-  --accent: #fafafa;
+
+  /* Accent (emerald green — primary brand color) */
+  --accent: #10b981;
   --accent-foreground: #0a0a0a;
-  --ring: rgba(255, 255, 255, 0.4);
-  --grid-color: rgba(255, 255, 255, 0.04);
+  --accent-glow: rgba(16, 185, 129, 0.4);
+  --accent-soft: rgba(16, 185, 129, 0.1);
+  --accent-border: rgba(16, 185, 129, 0.2);
+
+  --ring: rgba(16, 185, 129, 0.3);
+
+  /* Grid pattern (emerald-tinted) */
+  --grid-color: rgba(16, 185, 129, 0.04);
+
+  /* Status colors (slightly brighter on dark) */
   --success: #34d399;
   --warning: #fbbf24;
   --danger: #f87171;
@@ -73,13 +69,20 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* === Subtle grid pattern (nextjs.org style) === */
+/* === Subtle emerald grid background === */
 .grid-bg {
   background-image:
     linear-gradient(var(--grid-color) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background-size: 48px 48px;
   background-position: -1px -1px;
+}
+
+.grid-bg-fine {
+  background-image:
+    linear-gradient(var(--grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 .dot-bg {
@@ -107,34 +110,32 @@ body {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--muted-foreground);
+  background: var(--accent);
 }
 
-/* === Glow effect for primary buttons === */
+/* === Emerald glow for primary buttons / brand === */
 .glow {
   box-shadow:
     0 0 0 1px var(--border-strong),
-    0 4px 12px -2px rgba(0, 0, 0, 0.08),
-    0 2px 4px -2px rgba(0, 0, 0, 0.04);
-}
-.dark .glow {
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.1),
-    0 4px 24px -4px rgba(255, 255, 255, 0.05),
+    0 4px 24px -4px var(--accent-glow),
     0 2px 8px -2px rgba(0, 0, 0, 0.5);
 }
 
-/* === Card hover effect === */
+.glow-emerald {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 24px -4px var(--accent-glow),
+    0 4px 16px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* === Card hover effect (emerald tinted) === */
 .card-hover {
   transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .card-hover:hover {
-  border-color: var(--border-strong);
+  border-color: var(--accent-border);
   transform: translateY(-1px);
-  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.1);
-}
-.dark .card-hover:hover {
-  box-shadow: 0 8px 32px -8px rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 32px -8px var(--accent-glow);
 }
 
 /* === Slide-in animation for mobile sidebar === */
@@ -162,10 +163,27 @@ body {
   from { opacity: 1; }
   to { opacity: 0; }
 }
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
 
 .animate-slide-in {
   animation: slide-in-from-left 240ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .animate-fade-in {
   animation: fade-in 200ms ease-out;
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* === Selection === */
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
