@@ -67,6 +67,22 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* Tell the browser to render form controls (select, input, scrollbars)
+     in dark mode. Native <select> dropdown options follow this. */
+  color-scheme: dark;
+}
+
+/* Native <select> dropdown options on dark theme:
+   Make sure background is dark and text is light so options
+   are readable when the OS-native popup opens. */
+select option {
+  background-color: var(--surface);
+  color: var(--foreground);
+}
+
+select option:checked {
+  background-color: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* === Subtle emerald grid background === */

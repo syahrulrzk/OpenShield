@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
   Server,
+  Cpu,
   Terminal,
   Bell,
   ShieldCheck,
@@ -32,6 +33,7 @@ type SubItem = {
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
   locked?: boolean;
   badge?: string;
+  hidden?: boolean;
 };
 
 type NavItem = {
@@ -58,13 +60,20 @@ const navGroups: NavGroup[] = [
   {
     label: "Monitoring",
     items: [
+      {
+        href: "/dashboard/agents",
+        label: "Agents",
+        icon: Cpu,
+        requiresRole: ["OWNER", "ADMIN"] as const,
+      },
       { href: "/dashboard/assets", label: "Assets", icon: Server },
       {
         href: "/dashboard/events",
         label: "Events",
         icon: Activity,
         children: [
-          { href: "/dashboard/events", label: "SSH", icon: Terminal },
+          // SSH login events submenu hidden by default — handled via SSH agent instead
+          { href: "/dashboard/events", label: "SSH", icon: Terminal, hidden: true },
           { href: "/dashboard/events/database", label: "Database", icon: Database },
           {
             href: "/dashboard/events/aplikasi",
@@ -276,9 +285,11 @@ export function DashboardShell({
                           className="overflow-hidden"
                         >
                           <div className="ml-4 pl-3 border-l border-[var(--border)] space-y-0.5 py-1">
-                            {item.children.map((sub) => {
-                              const subActive = pathname === sub.href;
-                              const SubIcon = sub.icon;
+                            {item.children
+                              .filter((sub) => !sub.hidden)
+                              .map((sub) => {
+                                const subActive = pathname === sub.href;
+                                const SubIcon = sub.icon;
                               if (sub.locked) {
                                 return (
                                   <div

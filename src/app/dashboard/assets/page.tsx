@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
 import { AddAssetButton } from "./_components/add-asset-button";
+import { AssetActions } from "./_components/asset-actions";
 import {
   Server,
   Circle,
@@ -81,21 +82,16 @@ export default async function AssetsPage({
       : "ALL"
   ) as FilterEnv;
 
-  // Counts for tabs (single query per category, small N)
+  // Counts for tabs
   const counts = await prisma.asset.groupBy({
     by: ["category"],
     where: { userId: session.userId },
     _count: { _all: true },
   });
-  const countMap: Record<string, number> = {
-    SSH: 0,
-    DATABASE: 0,
-    APP: 0,
-  };
+  const countMap: Record<string, number> = { SSH: 0, DATABASE: 0, APP: 0 };
   for (const c of counts) countMap[c.category] = c._count._all;
   const totalCount = countMap.SSH + countMap.DATABASE + countMap.APP;
 
-  // Counts for env filter
   const envCounts = await prisma.asset.groupBy({
     by: ["environment"],
     where: {
@@ -115,26 +111,20 @@ export default async function AssetsPage({
       ...(filter !== "ALL" ? { category: filter } : {}),
       ...(envFilter !== "ALL" ? { environment: envFilter } : {}),
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ environment: "asc" }, { displayName: "asc" }, { hostname: "asc" }],
     select: {
       id: true,
       category: true,
       environment: true,
+      displayName: true,
       hostname: true,
       publicIp: true,
       privateIp: true,
       os: true,
-      kernel: true,
-      sshPort: true,
       sshUser: true,
       dbType: true,
-      dbHost: true,
-      dbPort: true,
-      dbName: true,
-      dbUser: true,
       status: true,
       lastSeenAt: true,
-      createdAt: true,
     },
   });
 
@@ -157,11 +147,15 @@ export default async function AssetsPage({
   function buildAssetHref(cat?: FilterCat, env?: FilterEnv) {
     const c = cat ?? filter;
     const e = env ?? envFilter;
-    const params = new URLSearchParams();
-    if (c !== "ALL") params.set("category", c);
-    if (e !== "ALL") params.set("environment", e);
-    const q = params.toString();
+    const p = new URLSearchParams();
+    if (c !== "ALL") p.set("category", c);
+    if (e !== "ALL") p.set("environment", e);
+    const q = p.toString();
     return q ? `/dashboard/assets?${q}` : "/dashboard/assets";
+  }
+
+  function hostIpOf(a: typeof assets[number]) {
+    return a.publicIp || a.privateIp || "—";
   }
 
   return (
@@ -171,11 +165,6 @@ export default async function AssetsPage({
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Assets</h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
             {totalCount} asset{totalCount !== 1 ? "s" : ""} being monitored
-            {filter !== "ALL" && (
-              <span className="ml-2 text-[var(--muted-foreground)]">
-                · filter: {CATEGORY_META[filter]?.label}
-              </span>
-            )}
           </p>
         </div>
         <AddAssetButton />
@@ -192,10 +181,10 @@ export default async function AssetsPage({
                 key={t.id}
                 href={buildAssetHref(t.id, envFilter)}
                 scroll={false}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
                   active
-                    ? "bg-white text-black shadow-sm"
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04]"
+                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04] border-transparent"
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" strokeWidth={active ? 2.25 : 1.75} />
@@ -203,7 +192,7 @@ export default async function AssetsPage({
                 <span
                   className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
                     active
-                      ? "bg-black/10 text-black/70"
+                      ? "bg-emerald-500/20 text-emerald-300"
                       : "bg-white/[0.04] text-[var(--muted-foreground)]"
                   }`}
                 >
@@ -214,7 +203,6 @@ export default async function AssetsPage({
           })}
         </div>
 
-        {/* Environment filter */}
         <div className="h-5 w-px bg-[var(--border)] mx-1 hidden sm:block" />
         <div className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.03] border border-[var(--border)] w-fit overflow-x-auto">
           {envTabs.map((t) => {
@@ -225,10 +213,10 @@ export default async function AssetsPage({
                 key={t.id}
                 href={buildAssetHref(filter, t.id)}
                 scroll={false}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap border ${
                   active
-                    ? "bg-white text-black shadow-sm"
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04]"
+                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04] border-transparent"
                 }`}
               >
                 {t.id === "ALL" ? (
@@ -243,7 +231,7 @@ export default async function AssetsPage({
                 <span
                   className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
                     active
-                      ? "bg-black/10 text-black/70"
+                      ? "bg-emerald-500/20 text-emerald-300"
                       : "bg-white/[0.04] text-[var(--muted-foreground)]"
                   }`}
                 >
@@ -260,43 +248,87 @@ export default async function AssetsPage({
           <Server className="h-10 w-10 text-[var(--muted-foreground)] mx-auto" strokeWidth={1.5} />
           <h3 className="mt-4 text-sm font-semibold">No assets yet</h3>
           <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-            {filter === "ALL"
-              ? "Add your first asset to start monitoring SSH and database login events"
-              : `Belum ada asset di kategori ${CATEGORY_META[filter]?.label}`}
+            Add your first asset to start monitoring SSH and database login events
           </p>
-          <div className="mt-5">
-            <AddAssetButton />
-          </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
-          <div className="overflow-x-auto">
+        <>
+          {/* ============ Mobile: card layout ============ */}
+          <div className="md:hidden space-y-2">
+            {assets.map((a) => {
+              const lastSeen = a.lastSeenAt ? new Date(a.lastSeenAt) : null;
+              const minutesAgo = lastSeen
+                ? Math.floor((Date.now() - lastSeen.getTime()) / 60000)
+                : null;
+              const isOnline = a.status === "ONLINE";
+              const catMeta = CATEGORY_META[a.category];
+              const envMeta = ENV_META[a.environment];
+              return (
+                <div
+                  key={a.id}
+                  className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+                >
+                  <Circle
+                    className={`h-2 w-2 fill-current shrink-0 ${
+                      isOnline ? "text-[var(--success)]"
+                        : a.status === "ERROR" ? "text-[var(--danger)]"
+                        : a.status === "PENDING" ? "text-[var(--warning)]"
+                        : "text-[var(--muted)]"
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono text-sm font-medium truncate">
+                      {a.displayName || a.hostname}
+                    </div>
+                    <div className="text-[10px] text-[var(--muted-foreground)] font-mono truncate">
+                      {a.displayName && a.displayName !== a.hostname ? `${a.hostname} · ` : ""}
+                      {hostIpOf(a)}
+                    </div>
+                  </div>
+                  <span
+                    className="text-[9px] font-mono font-semibold tracking-wider px-1.5 py-0.5 rounded border shrink-0"
+                    style={{
+                      color: envMeta?.color,
+                      borderColor: `${envMeta?.color}40`,
+                      backgroundColor: `${envMeta?.color}10`,
+                    }}
+                  >
+                    {a.environment}
+                  </span>
+                  <AssetActions asset={a as any} />
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ============ Desktop: table layout ============ */}
+          <div className="hidden md:block rounded-xl border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] bg-white/[0.02]">
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-24">
                     Status
                   </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                    Name
+                  </th>
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-36">
                     Category
                   </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-28">
                     Env
                   </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                    Hostname
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-40">
+                    Host IP
                   </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden md:table-cell">
-                    IP
-                  </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden lg:table-cell">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-32">
                     OS
                   </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                    {filter === "DATABASE" || filter === "ALL" ? "Database" : "SSH"}
-                  </th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden sm:table-cell">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-24">
                     Last seen
+                  </th>
+                  <th className="text-right px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] w-20">
+                    Actions
                   </th>
                 </tr>
               </thead>
@@ -307,36 +339,38 @@ export default async function AssetsPage({
                     ? Math.floor((Date.now() - lastSeen.getTime()) / 60000)
                     : null;
                   const isOnline = a.status === "ONLINE";
-                  const dbBadge = a.dbType !== "NONE" ? DB_TYPE_BADGE[a.dbType] : null;
                   const catMeta = CATEGORY_META[a.category];
                   const CatIcon = catMeta?.icon ?? Server;
                   const envMeta = ENV_META[a.environment];
-                  const EnvIcon = envMeta?.icon ?? Globe;
-                  const showDbCol = filter === "ALL" || filter === "DATABASE";
                   return (
                     <tr
                       key={a.id}
                       className="border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors"
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
                           <Circle
                             className={`h-2 w-2 fill-current ${
-                              isOnline
-                                ? "text-[var(--success)]"
-                                : a.status === "ERROR"
-                                  ? "text-[var(--danger)]"
-                                  : a.status === "PENDING"
-                                    ? "text-[var(--warning)]"
-                                    : "text-[var(--muted)]"
+                              isOnline ? "text-[var(--success)]"
+                                : a.status === "ERROR" ? "text-[var(--danger)]"
+                                : a.status === "PENDING" ? "text-[var(--warning)]"
+                                : "text-[var(--muted)]"
                             }`}
                           />
-                          <span className="text-xs font-mono text-[var(--muted-foreground)]">
+                          <span className="text-[11px] font-mono text-[var(--muted-foreground)]">
                             {a.status}
                           </span>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-2.5">
+                        <div className="font-mono text-sm font-medium">{a.displayName || a.hostname}</div>
+                        {a.displayName && a.displayName !== a.hostname && (
+                          <div className="text-[10px] text-[var(--muted-foreground)] font-mono">
+                            {a.hostname}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1.5">
                           <CatIcon
                             className="h-3.5 w-3.5"
@@ -353,74 +387,31 @@ export default async function AssetsPage({
                           </span>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <div
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border"
+                      <td className="px-4 py-2.5">
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-mono font-semibold tracking-wider"
                           style={{
+                            color: envMeta?.color,
                             borderColor: `${envMeta?.color}40`,
                             backgroundColor: `${envMeta?.color}10`,
                           }}
                         >
-                          <EnvIcon
-                            className="h-3 w-3"
-                            strokeWidth={2}
-                            style={{ color: envMeta?.color }}
-                          />
-                          <span
-                            className="text-[10px] font-mono font-semibold tracking-wider"
-                            style={{ color: envMeta?.color }}
-                          >
-                            {a.environment}
-                          </span>
-                        </div>
+                          {a.environment}
+                        </span>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="font-mono text-sm font-medium">{a.hostname}</div>
-                        {a.privateIp && (
-                          <div className="text-[10px] text-[var(--muted-foreground)] font-mono">
-                            {a.privateIp}
-                          </div>
-                        )}
+                      <td className="px-4 py-2.5 text-xs font-mono text-[var(--muted-foreground)]">
+                        {hostIpOf(a)}
                       </td>
-                      <td className="px-4 py-3 text-xs font-mono text-[var(--muted-foreground)] hidden md:table-cell">
-                        {a.publicIp || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-[var(--muted-foreground)] hidden lg:table-cell">
+                      <td className="px-4 py-2.5 text-xs text-[var(--muted-foreground)] font-mono">
                         {a.os || "—"}
                       </td>
-                      <td className="px-4 py-3">
-                        {showDbCol && dbBadge ? (
-                          <div className="flex items-center gap-1.5 text-xs">
-                            <span
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ backgroundColor: dbBadge.color }}
-                            />
-                            <span style={{ color: dbBadge.color }} className="font-medium">
-                              {dbBadge.label}
-                            </span>
-                            {a.dbHost && (
-                              <code className="text-[10px] text-[var(--muted-foreground)] font-mono">
-                                :{a.dbPort}
-                              </code>
-                            )}
-                          </div>
-                        ) : !showDbCol && a.sshUser ? (
-                          <div className="flex items-center gap-1.5 text-xs">
-                            <span className="h-1.5 w-1.5 rounded-full bg-[var(--success)]" />
-                            <code className="font-mono text-[var(--muted-foreground)]">
-                              :{a.sshPort}
-                            </code>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-[var(--muted-foreground)]">—</span>
-                        )}
+                      <td className="px-4 py-2.5 text-[11px] text-[var(--muted-foreground)] font-mono">
+                        {minutesAgo !== null ? `${minutesAgo}m ago` : "never"}
                       </td>
-                      <td className="px-4 py-3 text-xs text-[var(--muted-foreground)] hidden sm:table-cell">
-                        {minutesAgo !== null ? (
-                          <span className="font-mono">{minutesAgo}m ago</span>
-                        ) : (
-                          <span>never</span>
-                        )}
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-end">
+                          <AssetActions asset={a as any} />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -428,7 +419,7 @@ export default async function AssetsPage({
               </tbody>
             </table>
           </div>
-        </div>
+        </>
       )}
 
       <div className="text-xs text-[var(--muted-foreground)]">

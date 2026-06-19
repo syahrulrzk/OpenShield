@@ -20,6 +20,13 @@ const PUBLIC_PATHS = [
   "/api/auth/register",
   "/api/auth/refresh",
   "/api/health",
+  // Internal endpoints — protected by HMAC at handler level (not session)
+  "/api/events/ingest",
+  "/api/poller/run",
+  "/api/agents/register",
+  "/api/agents/heartbeat",
+  // Quick install — URL itself is the bearer (agent_id + token)
+  "/api/install",
   "/_next",
   "/favicon.ico",
 ];

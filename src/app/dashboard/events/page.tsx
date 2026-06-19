@@ -70,7 +70,8 @@ export default async function EventsPage({ searchParams }: { searchParams: Promi
         method: true,
         country: true,
         eventTime: true,
-        asset: { select: { hostname: true, environment: true } },
+        count: true,
+        asset: { select: { hostname: true, displayName: true, environment: true } },
       },
     }),
     prisma.sshEvent.count({ where: baseWhere }),
@@ -297,9 +298,25 @@ export default async function EventsPage({ searchParams }: { searchParams: Promi
                           {new Date(e.eventTime).toLocaleString("id-ID", {
                             day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
                           })}
+                          {/* Count badge for aggregated events */}
+                          {e.count > 1 && (
+                            <span
+                              className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                              title={`Event ini terjadi ${e.count}× dalam 5 menit terakhir`}
+                            >
+                              ×{e.count}
+                            </span>
+                          )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-xs font-mono font-medium">{e.asset.hostname}</td>
+                      <td className="px-4 py-3 text-xs font-mono font-medium">
+                        <div>{e.asset.displayName || e.asset.hostname}</div>
+                        {e.asset.displayName && e.asset.displayName !== e.asset.hostname && (
+                          <div className="text-[10px] text-[var(--muted-foreground)] mt-0.5">
+                            {e.asset.hostname}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {eMeta && (
                           <span

@@ -12,7 +12,11 @@ import {
   TrendingUp,
   TrendingDown,
   ShieldAlert,
-  ArrowUpRight,
+  ShieldCheck,
+  Sparkles,
+  ArrowRight,
+  Plus,
+  Rocket,
 } from "lucide-react";
 import {
   LineChart,
@@ -182,7 +186,7 @@ function SectionHeader({
           className="text-[11px] font-medium text-[var(--muted)] hover:text-[var(--foreground)] flex items-center gap-1 transition-colors"
         >
           {action.label}
-          <ArrowUpRight className="h-3 w-3" />
+          <ArrowRight className="h-3 w-3" />
         </a>
       )}
     </div>
@@ -234,10 +238,34 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
       color: SEVERITY_COLORS[s],
     }));
 
+  // Compute Security Health Score (0-100)
+  // Formula: 100 baseline - critical alerts (×15) - failed logins (×0.5) + online assets bonus
+  const totalFailed = stats.sshFailedToday + stats.dbFailedToday;
+  const healthScore = Math.max(
+    0,
+    Math.min(
+      100,
+      100 -
+        stats.criticalAlerts * 15 -
+        stats.openAlerts * 5 -
+        Math.min(30, totalFailed * 0.5) +
+        (stats.onlineAssets > 0 ? 5 : 0)
+    )
+  );
+  const healthLabel =
+    healthScore >= 90 ? "Excellent" :
+    healthScore >= 75 ? "Good" :
+    healthScore >= 50 ? "Fair" :
+    healthScore >= 25 ? "At Risk" : "Critical";
+  const healthColor =
+    healthScore >= 75 ? "#10b981" :
+    healthScore >= 50 ? "#f59e0b" :
+    healthScore >= 25 ? "#f97316" : "#ef4444";
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <FadeIn className="flex items-end justify-between">
+      <FadeIn className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
             Security Overview
@@ -246,13 +274,91 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
             Real-time monitoring dari semua server &amp; database yang lo kelola
           </p>
         </div>
-        <div className="hidden sm:flex items-center gap-2 text-[10px] font-mono text-[var(--muted-foreground)]">
-          <PulseDot color="success" />
-          LIVE
+        <div className="hidden sm:flex items-center gap-3">
+          {/* Security Health Score badge */}
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5">
+            <div
+              className="h-7 w-7 rounded-md flex items-center justify-center font-mono font-bold text-[11px]"
+              style={{
+                backgroundColor: `${healthColor}15`,
+                border: `1px solid ${healthColor}40`,
+                color: healthColor,
+              }}
+            >
+              {healthScore}
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider leading-none">
+                Health
+              </span>
+              <span className="text-[11px] font-semibold leading-tight" style={{ color: healthColor }}>
+                {healthLabel}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 text-[10px] font-mono text-[var(--muted-foreground)]">
+            <PulseDot color="success" />
+            LIVE
+          </div>
         </div>
       </FadeIn>
 
-      {/* Stat cards row 1: Infrastructure */}
+      {/* Welcome / Get Started banner — shown to first-time users with 0 assets */}
+      {stats.totalAssets === 0 && (
+        <FadeIn delay={0.05}>
+          <div className="relative overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/[0.08] via-emerald-500/[0.02] to-transparent p-6 sm:p-8">
+            <div className="absolute top-0 right-0 w-64 h-64 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
+            <div className="absolute -top-4 -right-4 opacity-20">
+              <ShieldCheck className="h-32 w-32 text-emerald-500" strokeWidth={1} />
+            </div>
+            <div className="relative max-w-2xl">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-semibold tracking-[0.2em] uppercase text-emerald-400 mb-3">
+                <Sparkles className="h-3 w-3" />
+                Welcome to OpenShield
+              </div>
+              <h2 className="text-xl sm:text-2xl font-semibold tracking-tight mb-2">
+                Mulai monitor infrastructure lo dalam 60 detik 🚀
+              </h2>
+              <p className="text-sm text-[var(--muted-foreground)] mb-5 max-w-lg">
+                OpenShield bakal otomatis detect SSH login (auth.log) & database login events.
+                Tambah asset pertama lo — bisa SSH bastion, database server, atau keduanya.
+              </p>
+              <div className="flex items-center gap-3 flex-wrap">
+                <a
+                  href="/dashboard/assets"
+                  className="inline-flex items-center gap-2 h-10 px-5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 text-sm font-medium transition-all"
+                >
+                  <Plus className="h-4 w-4" strokeWidth={2.5} />
+                  Tambah Asset Pertama
+                  <ArrowRight className="h-3.5 w-3.5 opacity-60" />
+                </a>
+                <a
+                  href="/dashboard/analysis"
+                  className="inline-flex items-center gap-2 h-10 px-5 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-sm font-medium hover:bg-white/[0.04] transition-all"
+                >
+                  Lihat Demo Dashboard
+                </a>
+              </div>
+              <div className="mt-5 flex items-center gap-4 sm:gap-6 text-[11px] text-[var(--muted-foreground)]">
+                <div className="flex items-center gap-1.5">
+                  <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  Zero config SSH
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  MySQL/Postgres/SQL Server
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="h-1.5 w-1.5 rounded-full bg-purple-500" />
+                  Real-time threat detection
+                </div>
+              </div>
+            </div>
+          </div>
+        </FadeIn>
+      )}
+
+      {/* Stat cards row: 4 key metrics */}
       <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4" staggerDelay={0.06}>
         <StaggerItem>
           <StatCard
@@ -265,7 +371,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         </StaggerItem>
         <StaggerItem>
           <StatCard
-            label="SSH Today"
+            label="SSH Auth Today"
             value={totalSshAuth}
             sub={`${stats.sshSuccessToday} ✓ / ${stats.sshFailedToday} ✗`}
             icon={Activity}
@@ -292,92 +398,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         </StaggerItem>
       </StaggerContainer>
 
-      {/* Stat cards row 2: DB types + SSH + DB success rate */}
-      <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4" staggerDelay={0.06}>
-        <StaggerItem>
-          <StatCard
-            label="SSH Success"
-            value={stats.sshSuccessToday}
-            sub="logins today"
-            icon={CheckCircle2}
-          />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
-            label="SSH Failed"
-            value={stats.sshFailedToday}
-            sub="attempts today"
-            icon={XCircle}
-          />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
-            label="DB Success"
-            value={stats.dbSuccessToday}
-            sub={`${dbTypeTotal > 0 ? Object.keys(stats.assetsByDbType).length : 0} db types`}
-            icon={CheckCircle2}
-          />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
-            label="DB Failed"
-            value={stats.dbFailedToday}
-            sub="attempts today"
-            icon={XCircle}
-          />
-        </StaggerItem>
-      </StaggerContainer>
-
-      {/* Environment breakdown */}
-      <StaggerContainer className="grid grid-cols-2 sm:grid-cols-5 gap-3" staggerDelay={0.04}>
-        {([
-          { id: "PROD", label: "Production", color: "#ef4444", icon: Globe },
-          { id: "STAGING", label: "Staging", color: "#f97316", icon: Globe },
-          { id: "UAT", label: "UAT", color: "#3b82f6", icon: Globe },
-          { id: "DEV", label: "Dev", color: "#10b981", icon: Globe },
-          { id: "DR", label: "DR", color: "#a855f7", icon: Globe },
-        ] as const).map((env) => {
-          const count = stats.assetsByEnvironment[env.id] || 0;
-          const Icon = env.icon;
-          return (
-            <StaggerItem key={env.id}>
-              <div
-                className="rounded-xl border bg-[var(--surface)] p-4 relative overflow-hidden transition-all hover:border-opacity-60"
-                style={{ borderColor: `${env.color}30` }}
-              >
-                <div
-                  className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-10 blur-2xl"
-                  style={{ backgroundColor: env.color }}
-                />
-                <div className="relative">
-                  <div className="flex items-center justify-between mb-2">
-                    <div
-                      className="h-7 w-7 rounded-lg flex items-center justify-center"
-                      style={{ backgroundColor: `${env.color}15`, border: `1px solid ${env.color}40` }}
-                    >
-                      <Icon className="h-3.5 w-3.5" strokeWidth={2} style={{ color: env.color }} />
-                    </div>
-                    <span
-                      className="text-[9px] font-mono font-semibold tracking-wider"
-                      style={{ color: env.color }}
-                    >
-                      {env.id}
-                    </span>
-                  </div>
-                  <div className="text-2xl font-semibold font-mono tabular-nums">
-                    {count}
-                  </div>
-                  <div className="text-[10px] text-[var(--muted-foreground)] mt-0.5">
-                    {env.label} {count === 1 ? "asset" : "assets"}
-                  </div>
-                </div>
-              </div>
-            </StaggerItem>
-          );
-        })}
-      </StaggerContainer>
-
-      {/* Time series chart */}
+      {/* Time series chart — moved to TOP for first-impression impact */}
       <ChartReveal className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6" delay={0.2}>
         <SectionHeader
           title="Auth Events — Last 24h"
@@ -444,6 +465,55 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
           </div>
         )}
       </ChartReveal>
+
+      {/* Environment breakdown */}
+      <StaggerContainer className="grid grid-cols-2 sm:grid-cols-5 gap-3" staggerDelay={0.04}>
+        {([
+          { id: "PROD", label: "Production", color: "#ef4444", icon: Globe },
+          { id: "STAGING", label: "Staging", color: "#f97316", icon: Globe },
+          { id: "UAT", label: "UAT", color: "#3b82f6", icon: Globe },
+          { id: "DEV", label: "Dev", color: "#10b981", icon: Globe },
+          { id: "DR", label: "DR", color: "#a855f7", icon: Globe },
+        ] as const).map((env) => {
+          const count = stats.assetsByEnvironment[env.id] || 0;
+          const Icon = env.icon;
+          return (
+            <StaggerItem key={env.id}>
+              <div
+                className="rounded-xl border bg-[var(--surface)] p-4 relative overflow-hidden transition-all hover:border-opacity-60"
+                style={{ borderColor: `${env.color}30` }}
+              >
+                <div
+                  className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-10 blur-2xl"
+                  style={{ backgroundColor: env.color }}
+                />
+                <div className="relative">
+                  <div className="flex items-center justify-between mb-2">
+                    <div
+                      className="h-7 w-7 rounded-lg flex items-center justify-center"
+                      style={{ backgroundColor: `${env.color}15`, border: `1px solid ${env.color}40` }}
+                    >
+                      <Icon className="h-3.5 w-3.5" strokeWidth={2} style={{ color: env.color }} />
+                    </div>
+                    <span
+                      className="text-[9px] font-mono font-semibold tracking-wider"
+                      style={{ color: env.color }}
+                    >
+                      {env.id}
+                    </span>
+                  </div>
+                  <div className="text-2xl font-semibold font-mono tabular-nums">
+                    {count}
+                  </div>
+                  <div className="text-[10px] text-[var(--muted-foreground)] mt-0.5">
+                    {env.label} {count === 1 ? "asset" : "assets"}
+                  </div>
+                </div>
+              </div>
+            </StaggerItem>
+          );
+        })}
+      </StaggerContainer>
 
       {/* Two-column: Top attackers + Status/DB type distribution */}
       <StaggerContainer className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6" staggerDelay={0.1}>

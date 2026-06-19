@@ -73,6 +73,23 @@ model Asset {
   category     AssetCategory @default(SSH) @map("category")
   // Deployment environment (PROD/STAGING/UAT/DEV/DR)
   environment  Environment @default(PROD) @map("environment")
+
+  // ===== IDENTITAS SERVER (biar gampang manage banyak server) =====
+  // displayName: alias manusiawi, mis. "prod-web-jkt-01"
+  //   - Ditampilkan prominent di UI (lebih penting dari hostname/IP)
+  //   - Kalau kosong, fallback ke hostname saat read
+  //   - Format rekomendasi: <env>-<role>-<location>-<num>
+  //     contoh: prod-web-jkt-01, staging-db-sg-02, dr-bastion-jkt-01
+  displayName  String?    @map("display_name")
+  // role: fungsi server (web/db/app/cache/lb/bastion/monitoring/logging/etc)
+  role         String?
+  // location: datacenter / cloud region (jkt/sg/aws-ap-southeast/gcp-asia/etc)
+  location     String?
+  // tags: JSON array of labels, mis. ["nginx","payment","tier-1","critical"]
+  tags         Json?      @map("tags")
+  // description: notes bebas (purpose, owner, runbook link, dll)
+  description  String?    @db.Text
+
   hostname     String
   publicIp     String?    @map("public_ip")
   privateIp    String?    @map("private_ip")
@@ -93,6 +110,14 @@ model Asset {
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
 
+  // Poller state — tracks incremental auth.log position + last run status
+  // pollerCursor: byte offset in /var/log/auth.log (or log-specific cursor)
+  pollerCursor   String?   @map("poller_cursor")
+  pollerStatus   PollerStatus @default(IDLE) @map("poller_status")
+  pollerError    String?   @map("poller_error")
+  lastPolledAt   DateTime? @map("last_polled_at")
+  pollCount      Int       @default(0) @map("poll_count")
+
   user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   sshCredentials AssetCredential? @relation("SshCred")
   dbCredentials  AssetCredential? @relation("DbCred")
@@ -101,11 +126,14 @@ model Asset {
   alerts         Alert[]
 
   @@unique([userId, hostname])
+  @@unique([userId, displayName])
   @@index([userId])
   @@index([status])
   @@index([category])
   @@index([dbType])
   @@index([environment])
+  @@index([role])
+  @@index([displayName])
   @@map("assets")
 }
 
@@ -130,6 +158,13 @@ enum AssetStatus {
   ERROR    // Last poll failed
 }
 
+enum PollerStatus {
+  IDLE     // Not currently polling
+  POLLING  // Poll in progress
+  OK       // Last poll succeeded
+  ERROR    // Last poll failed (see pollerError)
+}
+
 enum DbType {
   NONE
   POSTGRES
@@ -137,11 +172,19 @@ enum DbType {
   SQLSERVER
 }
 
-// Encrypted credentials (SSH key + DB conn string) per asset
-// Decrypted server-side only, never sent to client
+// Encrypted credentials per asset
+// One AssetCredential row per asset, with separate SSH and DB FK slots.
+//   - SSH asset → sshAssetId set, sshEncData holds encrypted key/password
+//   - DB asset  → dbAssetId set,  dbEncData holds encrypted password
+// Splitting FK fields (instead of one assetId with dual @relation) avoids
+// the Prisma 6 + Postgres constraint-rename bug that previously forced a
+// destructive --force-reset during schema pushes.
 model AssetCredential {
   id             String   @id @default(cuid())
-  assetId        String   @unique @map("asset_id")
+  // Two nullable FK slots, each UNIQUE so at most one AssetCredential
+  // can be attached to a given Asset on each side.
+  sshAssetId     String?  @unique @map("ssh_asset_id")
+  dbAssetId      String?  @unique @map("db_asset_id")
   // Encrypted blob: iv (12B) + ciphertext + authTag (16B), base64 encoded
   sshEncData     String?  @map("ssh_enc_data")
   dbEncData      String?  @map("db_enc_data")
@@ -150,8 +193,8 @@ model AssetCredential {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  asset  Asset @relation("SshCred", fields: [assetId], references: [id], onDelete: Cascade, map: "assetcred_ssh_asset_fkey")
-  asset2 Asset? @relation("DbCred", fields: [assetId], references: [id], onDelete: Cascade, map: "assetcred_db_asset_fkey")
+  sshAsset Asset? @relation("SshCred", fields: [sshAssetId], references: [id], onDelete: Cascade)
+  dbAsset  Asset? @relation("DbCred", fields: [dbAssetId], references: [id], onDelete: Cascade)
 
   @@map("asset_credentials")
 }
@@ -170,6 +213,10 @@ model SshEvent {
   country   String?  // GeoIP later
   eventTime DateTime @map("event_time")
   raw       String?  // raw log line (for audit)
+  // Aggregation: identical events within the dedup window are merged
+  // into a single row with count incremented (prevents spam from
+  // cronjobs/automated SSH that log every minute).
+  count     Int      @default(1)
   createdAt DateTime @default(now()) @map("created_at")
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
@@ -201,6 +248,8 @@ model DbEvent {
   status      DbEventStatus
   eventTime   DateTime    @map("event_time")
   raw         String?     // raw log line
+  // Aggregation: same idea as SshEvent — duplicate events merged
+  count       Int         @default(1)
   createdAt   DateTime    @default(now()) @map("created_at")
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
@@ -293,4 +342,95 @@ model SystemSetting {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("system_settings")
+}
+
+// ============================================================
+// AGENTS (Bash/Python agents running on monitored hosts)
+// Optional, complements the centralized poller for hosts where
+// SSH/DB access isn't available or deeper coverage is required.
+// ============================================================
+
+model Agent {
+  id            String      @id @default(cuid())
+  // Human-readable alias, e.g. "prod-web-jkt-01-agent"
+  name          String
+  // hostname + ip are reported by the agent on first heartbeat.
+  // For admin-initiated flow (POST /api/agents) they're null until
+  // the agent comes online and reports its identity.
+  hostname      String?
+  ip            String?
+  // Agent implementation
+  type          AgentType
+  version       String      @default("1.0.0") // agent-reported version
+  os            String?     // e.g. "Ubuntu 24.04"
+  kernel        String?     // e.g. "6.8.0-124-generic"
+  // Lifecycle
+  status        AgentStatus @default(REGISTERED)
+  lastHeartbeat DateTime?   @map("last_heartbeat")
+  lastError     String?     @map("last_error")
+  registeredAt  DateTime    @default(now()) @map("registered_at")
+  revokedAt     DateTime?   @map("revoked_at")
+  // HMAC secret for authenticating agent-originated requests.
+  // Stored as SHA-256 hash (server never sees the plaintext again once
+  // returned to the agent on registration). Actual HMAC key is shown
+  // ONCE during registration and must be persisted by the agent.
+  // We keep the plaintext secret encrypted at rest using the same
+  // key as AssetCredential (so admins can rotate agent secrets
+  // from the UI without losing the agent's identity).
+  secretEnc     String?     @map("secret_enc")
+  // Config the agent pulls on each heartbeat (logs to watch, etc.)
+  config        Json?
+  // Stats
+  eventsSent    Int         @default(0) @map("events_sent")
+
+  events        AgentEvent[]
+
+  // Removed: @@unique([hostname, type]) — incompatible with admin-initiated
+  // flow where multiple agents can run on the same host (each with own agentId).
+  // The agentId (cuid) is the unique identity for auth.
+  @@index([status])
+  @@index([type])
+  @@index([hostname])
+  @@map("agents")
+}
+
+enum AgentType {
+  BASH    // agent.sh — zero deps, log file watching
+  PYTHON  // agent.py — full features, FIM, process monitor
+}
+
+enum AgentStatus {
+  REGISTERED  // created but no heartbeat yet
+  ONLINE      // last heartbeat < 2 min ago
+  STALE       // last heartbeat 2-10 min ago
+  OFFLINE     // last heartbeat > 10 min ago
+  ERROR       // last heartbeat returned error
+  REVOKED     // admin disabled this agent
+}
+
+// Events sent by agents. Different shape than SshEvent/DbEvent
+// (which are server-side captured). AgentEvent covers:
+//   - log.line    : parsed line from a watched log file
+//   - file.change : file integrity hash mismatch
+//   - process.new : new suspicious process started
+//   - metric.system : CPU/RAM/disk/network sample
+//   - custom      : user-defined plugin output
+model AgentEvent {
+  id         String   @id @default(cuid())
+  agentId    String   @map("agent_id")
+  eventType  String   // see comment above
+  severity   String   @default("INFO") // INFO | WARN | ERROR | CRITICAL
+  source     String   // file path, process name, or metric identifier
+  message    String   // human-readable summary
+  rawData    Json?    @map("raw_data") // structured details (parsed fields)
+  eventTime  DateTime @map("event_time")
+  count      Int      @default(1) // same dedup-with-aggregation idea
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, eventTime])
+  @@index([eventType, eventTime])
+  @@index([severity, eventTime])
+  @@map("agent_events")
 }

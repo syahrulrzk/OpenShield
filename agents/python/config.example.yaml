@@ -1,0 +1,36 @@
+# OpenShield Python Agent — Configuration Example
+# ──────────────────────────────────────────────────────────────
+# Save as /etc/openshield/agent.yaml and replace placeholders with
+# values from OpenShield UI → Settings → Agents → Add Agent.
+
+server_url: "http://YOUR-OPENSHIELD-SERVER:3001"
+agent_id: "PASTE-AGENT-ID-FROM-UI"
+secret_token: "PASTE-SECRET-TOKEN-FROM-UI"
+
+agent_name: "my-server-agent"
+
+# ─── Heartbeat ────────────────────────────────────────
+heartbeat_interval: 30        # seconds between heartbeats
+event_batch_size: 100         # max events per heartbeat
+
+# ─── File Integrity Monitoring ────────────────────────
+# Watch these paths for SHA-256 hash changes (alerts on modification)
+fim_paths:
+  - /etc/passwd
+  - /etc/shadow
+  - /etc/group
+  - /etc/sudoers
+  - /etc/ssh/sshd_config
+  - /etc/crontab
+
+# ─── Process Watchlist ───────────────────────────────
+# Regex patterns for suspicious processes (default: web→shell, miners, reverse shells)
+process_watchlist:
+  - '^(www-data|nginx|apache|httpd|www) .* (/bin/(ba)?sh|/bin/dash)$'
+  - '(xmrig|cryptonight|minerd|stratum\+tcp)'
+  - '(nc|ncat|netcat)\s.*(-e\s|/bin/(ba)?sh)'
+
+# ─── Paths (optional overrides) ──────────────────────
+state_dir: /var/lib/openshield
+log_dir: /var/log/openshield
+log_file: /var/log/openshield/agent.log

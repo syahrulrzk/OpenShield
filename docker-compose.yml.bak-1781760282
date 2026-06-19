@@ -1,0 +1,84 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: openshield-app
+    ports:
+      - "3001:3000"
+    environment:
+      NODE_ENV: production
+      APP_VERSION: "0.1.0"
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      POSTGRES_USER: openshield
+      POSTGRES_PASSWORD: "9e81dc2b4b4022eb159a27f21d3f5bea"
+      REDIS_PASSWORD: "d050381642df1153c32bcf4f2ec2d251"
+      SESSION_SECRET: "2d2747eb2b320b37e42b5f314513a9f1821a89e2eaa3401d405e438fdd4c2d05"
+      ENCRYPTION_KEY: "70cfdc838610a7b25261209823e9a404e3847d798ea3b38d7a54c7f74b03e22b"
+      PUBLIC_URL: "http://localhost:3001"
+      CORS_ORIGINS: ""
+      LOGIN_RATE_LIMIT: "5"
+      COOKIE_SECURE: "false"
+      DATABASE_URL: "postgresql://openshield:9e81dc2b4b4022eb159a27f21d3f5bea@postgres:5432/openshield?schema=public"
+      REDIS_URL: "redis://:d050381642df1153c32bcf4f2ec2d251@redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: openshield-postgres
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: openshield
+      POSTGRES_PASSWORD: "9e81dc2b4b4022eb159a27f21d3f5bea"
+      POSTGRES_DB: openshield
+    volumes:
+      - openshield-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openshield -d openshield"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: openshield-redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    command:
+      - sh
+      - -c
+      - |
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" >> /etc/redis.conf
+        cat /etc/redis.conf
+        redis-server /etc/redis.conf --appendonly yes
+    environment:
+      REDIS_PASSWORD: "d050381642df1153c32bcf4f2ec2d251"
+    volumes:
+      - openshield-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  openshield-postgres-data:
+    name: openshield_openshield-postgres-data
+  openshield-redis-data:
+    name: openshield_openshield-redis-data

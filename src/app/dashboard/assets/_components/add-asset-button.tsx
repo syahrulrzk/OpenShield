@@ -20,6 +20,7 @@ import {
   FlaskConical,
   Code2,
   Shield,
+  Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -132,12 +133,19 @@ export function AddAssetButton() {
   const [category, setCategory] = useState<AssetCategory>("SSH");
   const [environment, setEnvironment] = useState<Environment>("PROD");
   const [form, setForm] = useState({
+    // Identitas
+    displayName: "",
     hostname: "",
+    publicIp: "",
+    privateIp: "",
+    os: "",
+    // SSH
     sshUser: "root",
     sshPort: 22,
     sshKey: "",
     sshPassword: "",
     sshAuthType: "key" as "key" | "password",
+    // DB
     dbType: "POSTGRES" as DbType,
     dbHost: "localhost",
     dbPort: 5432,
@@ -145,6 +153,27 @@ export function AddAssetButton() {
     dbUser: "openshield_reader",
     dbPassword: "",
   });
+
+  // Auto-suggest displayName: kalau hostname numeric (IP) → pakai env prefix,
+  // kalau hostname FQDN → pakai prefix env-<hostname-prefix>
+  function suggestDisplayName(): string {
+    const base = form.hostname
+      .split(".")[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "");
+    if (!base) return "";
+    return `${environment.toLowerCase()}-${base}`.slice(0, 128);
+  }
+
+  function applySuggestedName() {
+    const suggested = suggestDisplayName();
+    if (!suggested) {
+      toast.error("Isi hostname dulu bro");
+      return;
+    }
+    setForm({ ...form, displayName: suggested });
+    toast.success("Display name diset");
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -157,7 +186,11 @@ export function AddAssetButton() {
       const body: any = {
         category,
         environment,
+        displayName: form.displayName.trim() || undefined,
         hostname: form.hostname,
+        publicIp: form.publicIp.trim() || undefined,
+        privateIp: form.privateIp.trim() || undefined,
+        os: form.os.trim() || undefined,
       };
       if (category === "SSH") {
         body.sshUser = form.sshUser || undefined;
@@ -214,7 +247,7 @@ export function AddAssetButton() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 h-9 px-4 rounded-lg bg-white text-black hover:bg-white/90 text-sm font-medium transition-all glow"
+        className="flex items-center gap-2 h-9 px-4 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 text-sm font-medium transition-all border border-emerald-500/40 hover:border-emerald-400/60"
       >
         <Plus className="h-4 w-4" strokeWidth={2.5} />
         Add Asset
@@ -268,12 +301,12 @@ export function AddAssetButton() {
                       type="button"
                       onClick={() => pickCategory(c.id)}
                       disabled={!c.available}
-                      className={`relative flex flex-col items-start gap-1.5 p-3 rounded-lg text-left transition-all overflow-hidden ${
+                      className={`relative flex flex-col items-start gap-1.5 p-3 rounded-lg text-left transition-all overflow-hidden border ${
                         active
-                          ? "bg-white text-black shadow-lg"
+                          ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
                           : c.available
-                            ? "text-[var(--foreground)] hover:bg-white/[0.05]"
-                            : "text-[var(--muted-foreground)] opacity-60 cursor-not-allowed"
+                            ? "text-[var(--foreground)] hover:bg-white/[0.05] border-transparent"
+                            : "text-[var(--muted-foreground)] opacity-60 cursor-not-allowed border-transparent"
                       }`}
                     >
                       <div className="flex items-center justify-between w-full">
@@ -285,7 +318,7 @@ export function AddAssetButton() {
                           <span
                             className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono uppercase tracking-wider ${
                               active
-                                ? "bg-black/10 text-black/70"
+                                ? "bg-emerald-500/25 text-emerald-300"
                                 : "bg-white/[0.08] text-[var(--muted-foreground)]"
                             }`}
                           >
@@ -343,6 +376,72 @@ export function AddAssetButton() {
                     </button>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Server details — keep it simple: hostname, IP, display name */}
+            <div className="px-6 pt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="flex items-center justify-between text-[10px] font-medium text-[var(--muted-foreground)] mb-1">
+                    <span>Display Name (alias)</span>
+                    {form.hostname && (
+                      <button
+                        type="button"
+                        onClick={applySuggestedName}
+                        className="flex items-center gap-1 text-[10px] text-emerald-400 hover:text-emerald-300"
+                        title="Generate otomatis dari hostname"
+                      >
+                        <Wand2 className="h-3 w-3" />
+                        suggest
+                      </button>
+                    )}
+                  </label>
+                  <input
+                    value={form.displayName}
+                    onChange={(e) =>
+                      setForm({ ...form, displayName: e.target.value })
+                    }
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-mono focus:border-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                    placeholder="prod-web-01"
+                  />
+                  <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">
+                    Alias untuk UI. Kosongkan → pakai hostname.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-[var(--muted-foreground)] mb-1">
+                    Hostname <span className="text-[var(--danger)]">*</span>
+                  </label>
+                  <input
+                    required
+                    value={form.hostname}
+                    onChange={(e) =>
+                      setForm({ ...form, hostname: e.target.value })
+                    }
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-mono focus:border-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                    placeholder="server.example.com"
+                  />
+                  <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">
+                    Nama server (FQDN atau hostname)
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-[var(--muted-foreground)] mb-1">
+                    Host IP
+                  </label>
+                  <input
+                    value={form.publicIp}
+                    onChange={(e) =>
+                      setForm({ ...form, publicIp: e.target.value })
+                    }
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-mono focus:border-[var(--foreground)] focus:outline-none"
+                    placeholder="10.0.0.5"
+                  />
+                  <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">
+                    IP buat akses SSH. Opsional.
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -421,7 +520,7 @@ export function AddAssetButton() {
                               }
                               className={`text-[10px] px-2.5 py-1 rounded transition-all ${
                                 form.sshAuthType === "key"
-                                  ? "bg-white text-black font-medium"
+                                  ? "bg-emerald-500/15 text-emerald-400"
                                   : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                               }`}
                             >
@@ -434,7 +533,7 @@ export function AddAssetButton() {
                               }
                               className={`text-[10px] px-2.5 py-1 rounded transition-all ${
                                 form.sshAuthType === "password"
-                                  ? "bg-white text-black font-medium"
+                                  ? "bg-emerald-500/15 text-emerald-400"
                                   : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                               }`}
                             >
@@ -548,7 +647,7 @@ export function AddAssetButton() {
                                 onClick={() => pickDbType(t)}
                                 className={`text-[11px] py-1.5 rounded transition-all font-medium ${
                                   form.dbType === t
-                                    ? "bg-white text-black"
+                                    ? "bg-emerald-500/15 text-emerald-400"
                                     : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                                 }`}
                               >
@@ -680,7 +779,7 @@ export function AddAssetButton() {
                     <button
                       type="submit"
                       disabled={loading || !form.hostname}
-                      className="flex-1 h-10 rounded-lg bg-white text-black hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center justify-center gap-2 transition-all glow"
+                      className="flex-1 h-10 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center justify-center gap-2 transition-all"
                     >
                       {loading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />

@@ -33,6 +33,9 @@ COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=build --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=build --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 
+# Agent bundles for download (Bash + Python)
+COPY --from=build --chown=nextjs:nodejs /app/agents ./agents
+
 USER nextjs
 EXPOSE 3000
 

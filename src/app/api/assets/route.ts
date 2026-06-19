@@ -21,7 +21,18 @@ const createSchema = z
     category: z.enum(["SSH", "DATABASE", "APP"]).default("SSH"),
     // Deployment environment
     environment: z.enum(["PROD", "STAGING", "UAT", "DEV", "DR"]).default("PROD"),
+
+    // ===== IDENTITAS SERVER =====
+    // displayName: alias manusiawi, mis. "prod-web-jkt-01"
+    // Optional — kalau kosong akan di-generate dari hostname
+    displayName: z.string().max(128).optional(),
     hostname: z.string().min(1).max(255),
+
+    // Network & system info (opsional, bisa diisi belakangan via edit)
+    publicIp: z.string().max(64).optional(),
+    privateIp: z.string().max(64).optional(),
+    os: z.string().max(128).optional(),
+    kernel: z.string().max(128).optional(),
 
     // SSH fields
     sshUser: z.string().max(64).optional(),
@@ -75,11 +86,16 @@ export async function GET(req: Request) {
 
   const assets = await prisma.asset.findMany({
     where,
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ environment: "asc" }, { displayName: "asc" }, { hostname: "asc" }],
     select: {
       id: true,
       category: true,
       environment: true,
+      displayName: true,
+      role: true,
+      location: true,
+      tags: true,
+      description: true,
       hostname: true,
       publicIp: true,
       privateIp: true,
@@ -124,6 +140,20 @@ export async function POST(req: Request) {
     return Response.json({ error: "Hostname sudah ada" }, { status: 409 });
   }
 
+  // Display name uniqueness check (kalau diisi manual)
+  const finalDisplayName = data.displayName?.trim() || data.hostname;
+  if (data.displayName?.trim()) {
+    const dup = await prisma.asset.findUnique({
+      where: { userId_displayName: { userId: auth.userId, displayName: finalDisplayName } },
+    });
+    if (dup) {
+      return Response.json(
+        { error: `Display name "${finalDisplayName}" sudah dipakai asset lain` },
+        { status: 409 }
+      );
+    }
+  }
+
   // Encrypt SSH credential
   const sshEncData =
     data.category === "SSH" && data.sshAuthType === "key" && data.sshKey
@@ -144,6 +174,11 @@ export async function POST(req: Request) {
         userId: auth.userId,
         category: data.category,
         environment: data.environment,
+        displayName: finalDisplayName,
+        publicIp: data.publicIp?.trim() || null,
+        privateIp: data.privateIp?.trim() || null,
+        os: data.os?.trim() || null,
+        kernel: data.kernel?.trim() || null,
         hostname: data.hostname,
         sshPort: data.category === "DATABASE" ? 22 : data.sshPort,
         sshUser: data.category === "DATABASE" ? null : data.sshUser,
@@ -158,7 +193,10 @@ export async function POST(req: Request) {
     if (sshEncData || dbEncData) {
       await tx.assetCredential.create({
         data: {
-          assetId: a.id,
+          // AssetCredential sekarang punya dua slot FK terpisah.
+          // SSH asset → sshAssetId, DB asset → dbAssetId.
+          sshAssetId: data.category === "SSH" ? a.id : null,
+          dbAssetId: data.category === "DATABASE" ? a.id : null,
           sshEncData,
           dbEncData,
         },
@@ -176,6 +214,7 @@ export async function POST(req: Request) {
     userAgent: ua,
     metadata: {
       hostname: data.hostname,
+      displayName: finalDisplayName,
       category: data.category,
       environment: data.environment,
       ssh: !!sshEncData,

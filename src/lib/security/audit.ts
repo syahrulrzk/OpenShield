@@ -31,7 +31,25 @@ export type AuditAction =
   | "user.create"
   | "user.update"
   | "user.delete"
-  | "settings.update";
+  | "settings.update"
+  | "mock.generate"
+  | "mock.clear"
+  | "ingest.accepted"
+  | "ingest.rejected"
+  | "poller.run"
+  | "poller.error"
+  | "agent.created"
+  | "agent.register.created"
+  | "agent.register.rotated"
+  | "agent.register.rejected"
+  | "agent.heartbeat.rejected"
+  | "agent.revoked"
+  | "agent.reactivated"
+  | "agent.updated"
+  | "agent.token.rotated"
+  | "agent.bundle.downloaded"
+  | "agent.deleted"
+  | "agent.install_script.generated";
 
 export type AuditInput = {
   userId?: string | null;

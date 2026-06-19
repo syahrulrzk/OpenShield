@@ -132,10 +132,10 @@ export function AnalysisClient() {
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`h-8 px-3 rounded-lg text-xs font-mono transition-colors ${
+              className={`h-8 px-3 rounded-lg text-xs font-mono transition-colors border ${
                 days === d
-                  ? "bg-white text-black font-semibold"
-                  : "border border-[var(--border)] hover:bg-white/[0.04]"
+                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 font-semibold"
+                  : "border-[var(--border)] hover:bg-white/[0.04]"
               }`}
             >
               {d === 1 ? "24h" : `${d}d`}
@@ -231,7 +231,7 @@ export function AnalysisClient() {
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-6 h-6 rounded-md bg-white text-black flex items-center justify-center text-[10px] font-bold font-mono">
+                    <div className="w-6 h-6 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 flex items-center justify-center text-[10px] font-bold font-mono">
                       {String(i + 1).padStart(2, "0")}
                     </div>
                     <div className="flex items-center gap-2 min-w-0">

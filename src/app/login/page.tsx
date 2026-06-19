@@ -287,7 +287,7 @@ function LoginForm() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full rounded-lg bg-white text-black hover:bg-emerald-400 hover:text-black disabled:opacity-50 disabled:hover:bg-white font-medium py-3 px-4 text-sm transition-all flex items-center justify-center gap-2 group shadow-[0_0_20px_rgba(255,255,255,0.05)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
+                className="w-full rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 font-medium py-3 px-4 text-sm transition-all flex items-center justify-center gap-2 group hover:shadow-[0_0_30px_rgba(16,185,129,0.4)]"
               >
                 {loading ? (
                   <>

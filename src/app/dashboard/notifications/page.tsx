@@ -145,17 +145,17 @@ export default function NotificationsPage() {
           <button
             key={t.id}
             onClick={() => setFilter(t.id as typeof filter)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
               filter === t.id
-                ? "bg-white text-black shadow-sm"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] border-transparent"
             }`}
           >
             {t.label}
             <span
               className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
                 filter === t.id
-                  ? "bg-black/10 text-black/70"
+                  ? "bg-emerald-500/20 text-emerald-300"
                   : "bg-white/[0.04] text-[var(--muted-foreground)]"
               }`}
             >

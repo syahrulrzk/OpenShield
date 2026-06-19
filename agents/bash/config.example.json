@@ -1,0 +1,13 @@
+{
+  "server_url": "http://YOUR-OPENSHIELD-SERVER:3001",
+  "agent_id": "PASTE-AGENT-ID-FROM-UI",
+  "secret_token": "PASTE-SECRET-TOKEN-FROM-UI",
+  "agent_name": "my-server-agent",
+  "heartbeat_interval": 30,
+  "event_batch_size": 100,
+  "log_paths": [
+    {"path": "/var/log/auth.log", "parser": "sshd"},
+    {"path": "/var/log/syslog", "parser": "syslog"},
+    {"path": "/var/log/nginx/access.log", "parser": "nginx"}
+  ]
+}

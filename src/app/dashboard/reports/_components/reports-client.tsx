@@ -87,10 +87,10 @@ export function ReportsClient() {
                 <button
                   key={d}
                   onClick={() => setDays(d)}
-                  className={`h-9 rounded-lg text-xs font-mono transition-colors ${
+                  className={`h-9 rounded-lg text-xs font-mono transition-colors border ${
                     days === d
-                      ? "bg-white text-black font-semibold"
-                      : "border border-[var(--border)] hover:bg-white/[0.04]"
+                      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 font-semibold"
+                      : "border-[var(--border)] hover:bg-white/[0.04]"
                   }`}
                 >
                   {d === 1 ? "24h" : `${d}d`}
@@ -137,7 +137,7 @@ export function ReportsClient() {
           <button
             onClick={generate}
             disabled={status === "generating"}
-            className="flex items-center gap-2 h-9 px-5 rounded-lg bg-white text-black hover:bg-white/90 disabled:opacity-50 text-sm font-medium glow"
+            className="flex items-center gap-2 h-9 px-5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 text-sm font-medium"
           >
             <Download className="h-4 w-4" strokeWidth={2.5} />
             {status === "generating" ? "Generating..." : "Generate & Download"}

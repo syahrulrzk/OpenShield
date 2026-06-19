@@ -22,6 +22,12 @@ services:
       COOKIE_SECURE: "false"
       DATABASE_URL: "postgresql://openshield:9e81dc2b4b4022eb159a27f21d3f5bea@postgres:5432/openshield?schema=public"
       REDIS_URL: "redis://:d050381642df1153c32bcf4f2ec2d251@redis:6379"
+      # Poller
+      INGEST_HMAC_SECRET: "${INGEST_HMAC_SECRET:-os_ingest_3b2a1c9d8e7f6543210fedcba9876543210abcdef1234567890fedcba}"
+      POLLER_INTERVAL_SECONDS: "${POLLER_INTERVAL_SECONDS:-30}"
+      POLLER_ENABLED: "${POLLER_ENABLED:-true}"
+      OPENSHIELD_BASE_URL: "http://127.0.0.1:3000"
+      OPENSHIELD_PUBLIC_URL: "${OPENSHIELD_PUBLIC_URL:-http://172.16.19.235:3001}"
     depends_on:
       postgres:
         condition: service_healthy
