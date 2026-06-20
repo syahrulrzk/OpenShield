@@ -1,6 +1,8 @@
 "use client";
 
+import * as React from "react";
 import {
+  LayoutDashboard,
   Server,
   CheckCircle2,
   XCircle,
@@ -17,6 +19,7 @@ import {
   ArrowRight,
   Plus,
   Rocket,
+  AppWindow,
 } from "lucide-react";
 import {
   LineChart,
@@ -44,14 +47,14 @@ type Stats = Awaited<ReturnType<typeof import("../page").default>> extends React
   : any;
 
 type DashboardStats = {
-  totalAssets: number;
-  onlineAssets: number;
+  totalAgents: number;
+  onlineAgents: number;
   assetsByStatus: Record<string, number>;
   assetsByDbType: Record<string, number>;
   assetsByEnvironment: Record<string, number>;
-  sshSuccessToday: number;
-  sshFailedToday: number;
-  sshLast24h: number;
+  serverSuccessToday: number;
+  serverFailedToday: number;
+  serverLast24h: number;
   dbSuccessToday: number;
   dbFailedToday: number;
   dbLast24h: number;
@@ -62,7 +65,7 @@ type DashboardStats = {
   topSshAttackers: { ip: string; count: number }[];
   topDbAttackers: { ip: string; dbType: string; count: number }[];
   topCountries: { country: string; count: number }[];
-  sshTimeseries: { hour: string; success: number; failed: number }[];
+  serverTimeseries: { hour: string; success: number; failed: number }[];
   dbTimeseries: { hour: string; success: number; failed: number }[];
   recentSsh: { id: string; hostname: string; username: string; sourceIp: string; status: string; eventTime: string }[];
   recentDb: { id: string; hostname: string; dbType: string; username: string; sourceIp: string | null; status: string; eventTime: string }[];
@@ -193,15 +196,40 @@ function SectionHeader({
   );
 }
 
+
+interface TabItem {
+  id: "overview" | "server" | "database" | "apps";
+  label: string;
+  icon: any;
+  href?: string;
+  badge?: string;
+  locked?: boolean;
+}
+
+const TAB_ITEMS: TabItem[] = [] as unknown as TabItem[];
+
+function DashboardTabs({
+  activeTab: _activeTab,
+  onTabChange: _onTabChange,
+}: {
+  activeTab: "overview" | "server" | "database" | "apps";
+  onTabChange: (tab: "overview" | "server" | "database" | "apps") => void;
+}) {
+  // Tabs removed — navigation handled by sidebar Event Log submenu
+  return null;
+}
+
 export function DashboardClient({ stats }: { stats: DashboardStats }) {
-  const totalSshAuth = stats.sshSuccessToday + stats.sshFailedToday;
+    const [activeTab, setActiveTab] = React.useState<"overview" | "server" | "database" | "apps">("overview");
+
+  const totalServerAuth = stats.serverSuccessToday + stats.serverFailedToday;
   const totalDbAuth = stats.dbSuccessToday + stats.dbFailedToday;
   const dbTypeTotal = Object.values(stats.assetsByDbType).reduce((a, b) => a + b, 0);
 
   // Merge SSH + DB timeseries for combined chart
   const mergedTs = (() => {
     const map = new Map<string, { hour: string; sshSuccess: number; sshFailed: number; dbSuccess: number; dbFailed: number }>();
-    stats.sshTimeseries.forEach((r) => {
+    stats.serverTimeseries.forEach((r) => {
       map.set(r.hour, { hour: r.hour, sshSuccess: r.success, sshFailed: r.failed, dbSuccess: 0, dbFailed: 0 });
     });
     stats.dbTimeseries.forEach((r) => {
@@ -240,7 +268,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
 
   // Compute Security Health Score (0-100)
   // Formula: 100 baseline - critical alerts (×15) - failed logins (×0.5) + online assets bonus
-  const totalFailed = stats.sshFailedToday + stats.dbFailedToday;
+  const totalFailed = stats.serverFailedToday + stats.dbFailedToday;
   const healthScore = Math.max(
     0,
     Math.min(
@@ -249,7 +277,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         stats.criticalAlerts * 15 -
         stats.openAlerts * 5 -
         Math.min(30, totalFailed * 0.5) +
-        (stats.onlineAssets > 0 ? 5 : 0)
+        (stats.onlineAgents > 0 ? 5 : 0)
     )
   );
   const healthLabel =
@@ -263,6 +291,9 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
     healthScore >= 25 ? "#f97316" : "#ef4444";
 
   return (
+    <>
+    <DashboardTabs activeTab={activeTab} onTabChange={setActiveTab} />
+
     <div className="space-y-6">
       {/* Header */}
       <FadeIn className="flex items-end justify-between gap-4 flex-wrap">
@@ -304,7 +335,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
       </FadeIn>
 
       {/* Welcome / Get Started banner — shown to first-time users with 0 assets */}
-      {stats.totalAssets === 0 && (
+      {stats.totalAgents === 0 && (
         <FadeIn delay={0.05}>
           <div className="relative overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/[0.08] via-emerald-500/[0.02] to-transparent p-6 sm:p-8">
             <div className="absolute top-0 right-0 w-64 h-64 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
@@ -321,15 +352,15 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
               </h2>
               <p className="text-sm text-[var(--muted-foreground)] mb-5 max-w-lg">
                 OpenShield bakal otomatis detect SSH login (auth.log) & database login events.
-                Tambah asset pertama lo — bisa SSH bastion, database server, atau keduanya.
+                Install agent pertama lo di server yg mau dimonitor — cukup satu command curl, langsung jalan.
               </p>
               <div className="flex items-center gap-3 flex-wrap">
                 <a
-                  href="/dashboard/assets"
+                  href="/dashboard/agents"
                   className="inline-flex items-center gap-2 h-10 px-5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 text-sm font-medium transition-all"
                 >
                   <Plus className="h-4 w-4" strokeWidth={2.5} />
-                  Tambah Asset Pertama
+                  Install Agent Pertama
                   <ArrowRight className="h-3.5 w-3.5 opacity-60" />
                 </a>
                 <a
@@ -362,18 +393,18 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
       <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4" staggerDelay={0.06}>
         <StaggerItem>
           <StatCard
-            label="Total Assets"
-            value={stats.totalAssets}
-            sub={`${stats.onlineAssets} online`}
+            label="Active Agents"
+            value={stats.onlineAgents}
+            sub={`${stats.totalAgents} total`}
             icon={Server}
             trend="neutral"
           />
         </StaggerItem>
         <StaggerItem>
           <StatCard
-            label="SSH Auth Today"
-            value={totalSshAuth}
-            sub={`${stats.sshSuccessToday} ✓ / ${stats.sshFailedToday} ✗`}
+            label="Server Auth Today"
+            value={totalServerAuth}
+            sub={`${stats.serverSuccessToday} ✓ / ${stats.serverFailedToday} ✗`}
             icon={Activity}
             trend="neutral"
           />
@@ -403,7 +434,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         <SectionHeader
           title="Auth Events — Last 24h"
           sub="Per-jam, success vs failed (SSH + DB)"
-          action={{ label: "View all events", href: "/dashboard/events" }}
+          action={{ label: "View all events", href: "/dashboard/server" }}
         />
         {mergedTs.length === 0 ? (
           <div className="h-64 flex flex-col items-center justify-center text-center">
@@ -420,11 +451,11 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={mergedTs} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                 <defs>
-                  <linearGradient id="sshSucc" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="serverSucc" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
                     <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
                   </linearGradient>
-                  <linearGradient id="sshFail" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="serverFail" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#ef4444" stopOpacity={0.3} />
                     <stop offset="100%" stopColor="#ef4444" stopOpacity={0} />
                   </linearGradient>
@@ -456,8 +487,8 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
                   wrapperStyle={{ fontSize: 11, paddingTop: 10 }}
                   iconType="circle"
                 />
-                <Area type="monotone" dataKey="sshSuccess" name="SSH ✓" stroke="#10b981" strokeWidth={1.5} fill="url(#sshSucc)" />
-                <Area type="monotone" dataKey="sshFailed" name="SSH ✗" stroke="#ef4444" strokeWidth={1.5} fill="url(#sshFail)" />
+                <Area type="monotone" dataKey="sshSuccess" name="SSH ✓" stroke="#10b981" strokeWidth={1.5} fill="url(#serverSucc)" />
+                <Area type="monotone" dataKey="sshFailed" name="SSH ✗" stroke="#ef4444" strokeWidth={1.5} fill="url(#serverFail)" />
                 <Area type="monotone" dataKey="dbSuccess" name="DB ✓" stroke="#3b82f6" strokeWidth={1.5} fill="url(#dbSucc)" />
                 <Area type="monotone" dataKey="dbFailed" name="DB ✗" stroke="#f59e0b" strokeWidth={1.5} fill="url(#dbFail)" />
               </AreaChart>
@@ -467,13 +498,11 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
       </ChartReveal>
 
       {/* Environment breakdown */}
-      <StaggerContainer className="grid grid-cols-2 sm:grid-cols-5 gap-3" staggerDelay={0.04}>
+      <StaggerContainer className="grid grid-cols-3 gap-3" staggerDelay={0.04}>
         {([
           { id: "PROD", label: "Production", color: "#ef4444", icon: Globe },
           { id: "STAGING", label: "Staging", color: "#f97316", icon: Globe },
           { id: "UAT", label: "UAT", color: "#3b82f6", icon: Globe },
-          { id: "DEV", label: "Dev", color: "#10b981", icon: Globe },
-          { id: "DR", label: "DR", color: "#a855f7", icon: Globe },
         ] as const).map((env) => {
           const count = stats.assetsByEnvironment[env.id] || 0;
           const Icon = env.icon;
@@ -521,7 +550,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         <StaggerItem>
         <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
-            title="Top SSH Attackers"
+            title="Top Server Activity"
             sub="Failed logins, 7 days"
           />
           {stats.topSshAttackers.length === 0 ? (
@@ -621,7 +650,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 400, damping: 25 }} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 h-full">
           <SectionHeader
             title="Asset Status"
-            sub={`${stats.totalAssets} total`}
+            sub={`${stats.totalAgents} total`}
           />
           {statusData.length === 0 ? (
             <div className="text-center py-8 text-xs text-[var(--muted-foreground)]">
@@ -650,7 +679,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
                 </ResponsiveContainer>
                 <div className="absolute inset-0 flex items-center justify-center">
                   <div className="text-center">
-                    <div className="text-xl font-semibold tabular-nums">{stats.totalAssets}</div>
+                    <div className="text-xl font-semibold tabular-nums">{stats.totalAgents}</div>
                     <div className="text-[9px] uppercase tracking-wider text-[var(--muted-foreground)]">
                       Total
                     </div>
@@ -766,7 +795,7 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
           <SectionHeader
             title="Recent Activity"
             sub="Latest 8 events"
-            action={{ label: "All events", href: "/dashboard/events" }}
+            action={{ label: "All events", href: "/dashboard/server" }}
           />
           <div className="space-y-2 -mx-1">
             {[
@@ -832,5 +861,6 @@ export function DashboardClient({ stats }: { stats: DashboardStats }) {
         </StaggerItem>
       </StaggerContainer>
     </div>
+    </>
   );
 }

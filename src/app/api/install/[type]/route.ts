@@ -19,8 +19,14 @@
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/security/audit";
 
-const VALID_TYPES = ["bash", "python"] as const;
+const VALID_TYPES = ["python"] as const;
 type AgentType = (typeof VALID_TYPES)[number];
+/**
+ * Bash installer is DEPRECATED (2026-06-20).
+ * The bash agent suffered a stable pipe_read hang after 1-2 heartbeats.
+ * Switched dev_linux to Python agent (verified end-to-end, no hang).
+ * Re-installing with bash is no longer supported — use Python.
+ */
 
 function isValidCreds(agentId: string, token: string): boolean {
   return (
@@ -110,6 +116,39 @@ SERVICE_NAME="\${SERVICE_NAME:-openshield-agent}"
 
 mkdir -p "$(dirname "$CONFIG_FILE")" "$INSTALL_DIR"
 
+# ============== Clean stale state from previous installs ==============
+# Bos requirement: agent ID gak berubah pas reinstall → we keep state files
+# only for same-agent-id, drop them when agent_id changes (otherwise agent
+# warns 'Agent ID in state file differs from config' forever).
+STATE_DIR="\${STATE_DIR:-/var/lib/openshield}"
+# Note: state filename is agent.state (key=value format), NOT agent.json
+if [[ -f "$STATE_DIR/agent.state" ]]; then
+  STALE_ID=$(grep -E '^agent_id=' "$STATE_DIR/agent.state" 2>/dev/null | head -1 | cut -d= -f2)
+  if [[ -n "$STALE_ID" && "$STALE_ID" != "$AGENT_ID" ]]; then
+    echo "→ Detected stale state from previous agent ($STALE_ID), clearing..."
+    rm -f "$STATE_DIR/agent.state" "$STATE_DIR/log_offsets.json" "$STATE_DIR/fim_baseline.json"
+  fi
+fi
+if [[ -f "$STATE_DIR/agent.json" ]]; then
+  # Also clean any legacy agent.json from previous broken installs
+  rm -f "$STATE_DIR/agent.json"
+  echo "→ Removed legacy agent.json state file"
+fi
+# Also remove legacy YAML config (different format, confuses agent)
+if [[ -f "/etc/openshield/agent.yaml" ]]; then
+  echo "→ Removing legacy YAML config (replaced by JSON)"
+  rm -f /etc/openshield/agent.yaml
+fi
+# Reset log offsets too — agent may have stale offsets from old installation
+# (different paths, different parser state)
+if [[ -f "$STATE_DIR/log_offsets.json" ]]; then
+  STALE_LOG_OFFSETS=$(cat "$STATE_DIR/log_offsets.json" 2>/dev/null)
+  if [[ -n "$STALE_LOG_OFFSETS" ]]; then
+    echo "→ Resetting stale log offsets (re-detect on first heartbeat)"
+    rm -f "$STATE_DIR/log_offsets.json"
+  fi
+fi
+
 # ============== Write config ==============
 cat > "$CONFIG_FILE" <<CFG
 {
@@ -118,18 +157,26 @@ cat > "$CONFIG_FILE" <<CFG
   "secret_token": ${J_TOKEN},
   "agent_name": ${J_NAME},
   "heartbeat_interval": 30,
-  "log_paths": [
+  "log_watchers": [
     { "path": "/var/log/auth.log", "parser": "sshd" },
     { "path": "/var/log/secure", "parser": "sshd" },
     { "path": "/var/log/syslog", "parser": "syslog" }
   ],
-  "file_integrity": {
-    "enabled": true,
-    "paths": ["/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/ssh/sshd_config"]
-  },
+  "fim_paths": [
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/ssh/sshd_config"
+  ],
   "process_watchlist": [
-    "xmrig", "minerd", "kdevtmpfsi", "kinsing",
-    "nc -e", "ncat -e", "bash -i", "/dev/tcp"
+    "xmrig",
+    "minerd",
+    "kdevtmpfsi",
+    "kinsing",
+    "nc -e",
+    "ncat -e",
+    "bash -i",
+    "/dev/tcp"
   ]
 }
 CFG
@@ -145,18 +192,51 @@ if [[ "$AGENT_TYPE" == "bash" ]]; then
 else
   curl -fsSL "${pyUrl}" -o "$INSTALL_DIR/agent.py"
   chmod +x "$INSTALL_DIR/agent.py"
-  AGENT_CMD="/usr/bin/python3 $INSTALL_DIR/agent.py -c $CONFIG_FILE"
+  # Resolve python3 path: on CentOS 7 (SCL) the symlink lives at /usr/local/bin/python3,
+  # otherwise /usr/bin/python3. Set early so the version check, install, and systemd unit all agree.
+  if [[ -x /usr/local/bin/python3 ]]; then
+    PYTHON3_BIN="/usr/local/bin/python3"
+  else
+    PYTHON3_BIN="/usr/bin/python3"
+  fi
+  AGENT_CMD="$PYTHON3_BIN $INSTALL_DIR/agent.py -c $CONFIG_FILE"
 
-  echo "→ Installing Python dependencies..."
-  if command -v pip3 >/dev/null 2>&1; then
-    pip3 install --quiet --disable-pip-version-check requests PyYAML 2>&1 | grep -v WARNING: || true
-  elif command -v pip >/dev/null 2>&1; then
-    pip install --quiet --disable-pip-version-check requests PyYAML 2>&1 | grep -v WARNING: || true
-  fi
+  echo "→ Installing Python dependencies (PEP 668 safe)"
+  # Ubuntu 24.04+ blocks system pip (PEP 668). Use system packages instead.
+  # Cross-distro: apt (Debian/Ubuntu) / dnf (RHEL/Fedora) / yum (CentOS) / apk (Alpine)
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y python3-psutil 2>/dev/null || pip3 install --quiet psutil 2>&1 | grep -v WARNING: || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3-requests python3-yaml python3-psutil 2>&1 | grep -v "^Reading\|^Building\|^Get:\|^Selecting\|^Preparing\|^Unpacking\|^Setting\|^0 upgraded" || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3-requests python3-pyyaml python3-psutil 2>&1 | tail -3 || true
+  elif command -v yum >/dev/null 2>&1; then
+    # CentOS 7 detection: base repo has no python3 (only 2.7).
+    # Must use Software Collections (SCL) — rh-python38.
+    if [[ -f /etc/centos-release ]] && grep -q "release 7" /etc/centos-release; then
+      echo "→ Detected CentOS 7 — installing Python 3 via Software Collections (SCL)"
+      yum install -y centos-release-scl 2>&1 | tail -2 || true
+      yum install -y rh-python38 rh-python38-python-pip rh-python38-python-devel 2>&1 | tail -2 || true
+      ln -sf /opt/rh/rh-python38/root/bin/python3 /usr/local/bin/python3
+      ln -sf /opt/rh/rh-python38/root/bin/pip3     /usr/local/bin/pip3
+      cat > /etc/profile.d/openshield-python.sh <<'PROFILE_EOF'
+source /opt/rh/rh-python38/enable 2>/dev/null || true
+export PATH="/opt/rh/rh-python38/root/bin:$PATH"
+PROFILE_EOF
+      chmod 0644 /etc/profile.d/openshield-python.sh
+      /usr/local/bin/python3 -m pip install --quiet requests pyyaml psutil 2>&1 | tail -3 || true
+    else
+      yum install -y python3-requests python3-pyyaml python3-psutil 2>&1 | tail -3 || true
+    fi
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache py3-requests py3-yaml py3-psutil 2>&1 | tail -3 || true
+  else
+    echo "⚠️  No supported package manager found."
+    echo "   Please install manually: requests, PyYAML, psutil (system Python 3.8+)"
+    exit 1
   fi
-  echo "✓ Python agent installed: $INSTALL_DIR/agent.py"
+  # Verify imports — fail fast if anything is missing
+  "$PYTHON3_BIN" -c "import requests, yaml, psutil" 2>&1 || { echo "❌ Python deps missing after install"; exit 1; }
+  echo "✓ Python agent installed: $INSTALL_DIR/agent.py (deps via system pkg manager)"
 fi
 
 # ============== Systemd service ==============
@@ -170,6 +250,16 @@ if [[ "$SKIP_SYSTEMD" != "1" ]] && command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 if [[ "$SYSTEMD_OK" == "1" ]]; then
+# Pre-create state/log dirs (root context, no systemd restrictions here)
+echo "→ Creating state and log directories"
+mkdir -p /var/lib/openshield /var/log/openshield 2>/dev/null
+chmod 755 /var/lib/openshield /var/log/openshield 2>/dev/null
+# Fallback: if /var is read-only or restricted, use /tmp (less secure but functional)
+if ! [[ -w /var/lib/openshield ]]; then
+  echo "⚠️  /var/lib/openshield not writable, falling back to /tmp/openshield-state"
+  mkdir -p /tmp/openshield-state /tmp/openshield-log
+  chmod 755 /tmp/openshield-state /tmp/openshield-log
+fi
 cat > "$SERVICE_FILE" <<UNIT
 [Unit]
 Description=OpenShield Agent ($AGENT_NAME)
@@ -179,17 +269,25 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
+Group=root
 ExecStart=$AGENT_CMD
 Restart=always
 RestartSec=10
 TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
 
-# Hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
+# Hardening (root-proof edition: dirs pre-created by installer; relaxed ProtectSystem to allow writes)
+NoNewPrivileges=false
+# SupplementaryGroups=adm allows root agent to read group-restricted logs
+# like /var/log/auth.log (mode 0640, owned by syslog:adm on Debian/Ubuntu).
+# Without this, agent gets PermissionDenied on auth.log under ProtectSystem=full.
+SupplementaryGroups=adm
+ProtectSystem=full
+ProtectHome=false
 PrivateTmp=true
-ReadWritePaths=$INSTALL_DIR /var/log /etc/openshield
+ReadWritePaths=$INSTALL_DIR /var/log /etc/openshield /var/lib/openshield /var/log/openshield
 CapabilityBoundingSet=
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -200,10 +298,21 @@ SystemCallArchitectures=native
 WantedBy=multi-user.target
 UNIT
 
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-systemctl restart "$SERVICE_NAME"
-echo "✓ Systemd service: $SERVICE_NAME (enabled + started)"
+# daemon-reload with error capture (don't fail entire install if systemd unavailable)
+if ! systemctl daemon-reload 2>&1; then
+  echo "⚠️  systemctl daemon-reload failed (broken systemd?)"
+  SYSTEMD_OK=0
+fi
+if [[ "$SYSTEMD_OK" == "1" ]]; then
+  systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || echo "⚠️  systemctl enable failed (will not auto-start on boot)"
+  if ! systemctl restart "$SERVICE_NAME" 2>&1; then
+    echo "⚠️  systemctl restart failed — check: systemctl status $SERVICE_NAME"
+    SYSTEMD_OK=0
+  fi
+fi
+if [[ "$SYSTEMD_OK" == "1" ]]; then
+  echo "✓ Systemd service: $SERVICE_NAME (enabled + started)"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════"

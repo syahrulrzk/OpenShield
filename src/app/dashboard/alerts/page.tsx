@@ -41,11 +41,12 @@ export default async function AlertsPage() {
   const session = await getSession();
   if (!session) return null;
 
-  const alerts = await prisma.alert.findMany({
+  // Try alerts table first
+  let alerts = await prisma.alert.findMany({
     where: {
       OR: [
         { asset: { userId: session.userId } },
-        { assetId: null }, // system-level alerts
+        { assetId: null },
       ],
     },
     orderBy: [{ status: "asc" }, { severity: "desc" }, { createdAt: "desc" }],
@@ -60,6 +61,30 @@ export default async function AlertsPage() {
       asset: { select: { hostname: true } },
     },
   });
+
+  // Fallback: pull recent agent events with ERROR/CRITICAL severity
+  if (alerts.length === 0) {
+    const agentEvents = await prisma.agentEvent.findMany({
+      where: {
+        severity: { in: ["ERROR", "CRITICAL"] },
+      },
+      orderBy: { eventTime: "desc" },
+      take: 50,
+      include: {
+        agent: { select: { name: true, hostname: true } },
+      },
+    });
+
+    alerts = agentEvents.map((e) => ({
+      id: e.id,
+      severity: e.severity === "CRITICAL" ? "CRITICAL" : "HIGH",
+      title: e.source.split("/").pop() || e.source,
+      description: e.message,
+      status: "OPEN",
+      createdAt: e.eventTime,
+      asset: { hostname: e.agent?.hostname || e.agent?.name || "unknown" },
+    }));
+  }
 
   const openCount = alerts.filter((a) => a.status === "OPEN").length;
   const criticalOpen = alerts.filter(

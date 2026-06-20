@@ -708,7 +708,7 @@ function MockDataSection() {
         return;
       }
       toast.success(
-        `Mock data generated: ${d.created.assets} assets, ${d.created.sshEvents} SSH events, ${d.created.dbEvents} DB events, ${d.created.alerts} alerts`
+        `Mock data generated: ${d.created.assets} assets, ${d.created.serverEvents} SSH events, ${d.created.dbEvents} DB events, ${d.created.alerts} alerts`
       );
       await refresh();
       router.refresh();
@@ -736,11 +736,11 @@ function MockDataSection() {
         toast.error(d.error || `Gagal clear (${r.status})`);
         return;
       }
-      if (d.deleted.assets === 0 && d.deleted.alerts === 0 && d.deleted.sshEvents === 0) {
+      if (d.deleted.assets === 0 && d.deleted.alerts === 0 && d.deleted.serverEvents === 0) {
         toast("Tidak ada mock data untuk dihapus", { icon: "ℹ️" });
       } else {
         toast.success(
-          `Cleared ${d.deleted.assets} assets, ${d.deleted.sshEvents} SSH events, ${d.deleted.dbEvents} DB events, ${d.deleted.alerts} alerts`
+          `Cleared ${d.deleted.assets} assets, ${d.deleted.serverEvents} SSH events, ${d.deleted.dbEvents} DB events, ${d.deleted.alerts} alerts`
         );
       }
       setConfirmClear(false);

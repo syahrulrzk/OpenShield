@@ -42,14 +42,47 @@ export function NotificationsBell() {
   const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
+  // Track which notification IDs have been marked read on this device.
+  // Persisted in localStorage so it survives reloads (until items age out).
+  const READ_KEY = "os:notif:read-ids:v1";
+
+  function getReadIds(): Set<string> {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem(READ_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function markReadPersistent(ids: string[]) {
+    if (typeof window === "undefined") return;
+    try {
+      const cur = getReadIds();
+      ids.forEach((id) => cur.add(id));
+      // Keep at most last 500 IDs (avoid unbounded growth)
+      const arr = Array.from(cur);
+      const trimmed = arr.slice(-500);
+      window.localStorage.setItem(READ_KEY, JSON.stringify(trimmed));
+    } catch {
+      // localStorage may be full/disabled — silent fallback
+    }
+  }
+
   async function fetchNotifications() {
     setLoading(true);
     try {
       const r = await fetch("/api/notifications?limit=8", { cache: "no-store" });
       if (!r.ok) return;
       const d = await r.json();
-      setItems(d.notifications || []);
-      setUnread(d.unreadCount || 0);
+      const all: Notification[] = d.notifications || [];
+      const readIds = getReadIds();
+      // Filter out items already marked read on this device.
+      // Users expect "Mark all read" → empty list, not dimmed list.
+      const unread = all.filter((n) => !readIds.has(n.id));
+      setItems(unread);
+      setUnread(unread.length);
     } catch {
       // silent
     } finally {
@@ -86,30 +119,39 @@ export function NotificationsBell() {
   }, [open]);
 
   async function markAllRead() {
-    const alertIds = items
-      .filter((i) => i.type === "alert")
-      .map((i) => i.id);
-    if (alertIds.length === 0) return;
+    const allIds = items.map((i) => i.id);
+    if (allIds.length === 0) return;
+
+    // Persist read state locally so it survives reloads.
+    // (Audit log is append-only on the server; alert status is updated via API.)
+    markReadPersistent(allIds);
+
+    // Best-effort: try to acknowledge server-side alerts.
+    // Audit items are no-op on server (immutable), but alerts get updated.
     try {
       await fetch("/api/notifications/mark-read", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: alertIds }),
+        body: JSON.stringify({ ids: allIds }),
       });
-      setUnread(0);
-      fetchNotifications();
     } catch {
-      // silent
+      // silent — local persistence is the source of truth for UI
     }
+
+    // Clear list immediately: items are persisted as read, so next fetch
+    // will filter them out. Users expect "Mark all read" → empty list.
+    setItems([]);
+    setUnread(0);
   }
 
   return (
-    <div className="relative" ref={ref}>
-      <motion.button
-        whileTap={{ scale: 0.92 }}
+    <div className="relative z-40" ref={ref}>
+      <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="relative h-9 w-9 rounded-lg border border-[var(--border)] hover:border-[var(--accent-border)] hover:bg-white/[0.04] flex items-center justify-center text-[var(--muted)] hover:text-[var(--accent)] transition-colors"
+        className="relative h-9 w-9 rounded-lg border border-[var(--border)] hover:border-[var(--accent-border)] hover:bg-white/[0.04] flex items-center justify-center text-[var(--muted)] hover:text-[var(--accent)] transition-all active:scale-95 cursor-pointer"
         aria-label="Notifications"
+        style={{ pointerEvents: "auto", zIndex: 60 }}
       >
         <BellRing className="h-4 w-4" />
         {unread > 0 && (
@@ -117,7 +159,7 @@ export function NotificationsBell() {
             {unread > 9 ? "9+" : unread}
           </span>
         )}
-      </motion.button>
+      </button>
 
       <AnimatePresence>
         {open && (
@@ -172,14 +214,18 @@ export function NotificationsBell() {
                 items.map((n) => {
                   const meta = SEVERITY_META[n.severity] || SEVERITY_META.INFO;
                   const Icon = meta.icon;
+                  const isRead = (n as Notification & { read?: boolean }).read;
                   return (
                     <div
                       key={n.id}
-                      className="px-4 py-3 border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors"
+                      className={`px-4 py-3 border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors ${isRead ? "opacity-55" : ""}`}
                     >
                       <div className="flex items-start gap-2.5">
-                        <div className={`shrink-0 mt-0.5 h-6 w-6 rounded ${meta.bg} flex items-center justify-center`}>
+                        <div className={`shrink-0 mt-0.5 h-6 w-6 rounded ${meta.bg} flex items-center justify-center relative`}>
                           <Icon className={`h-3.5 w-3.5 ${meta.color}`} />
+                          {!isRead && (
+                            <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_6px_var(--accent)]" />
+                          )}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">

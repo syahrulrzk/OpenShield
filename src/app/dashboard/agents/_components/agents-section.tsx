@@ -12,6 +12,7 @@ import {
   X,
   Loader2,
   AlertCircle,
+  AlertTriangle,
   Activity,
   Server,
   Terminal,
@@ -22,20 +23,30 @@ import {
   Code,
   Eye,
   EyeOff,
+  Network,
+  Search,
+  ArrowUpCircle, // Update Agent button icon
+  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/animations/modal";
+import { copyToClipboard } from "@/lib/clipboard";
+import { AGENT_COMPAT, getVersionStatus, buildUpdateCommand } from "@/lib/agent-versions";
 
 type AgentType = "BASH" | "PYTHON";
+
+type AgentEnv = "PROD" | "STAGING" | "UAT";
 
 type Agent = {
   id: string;
   name: string;
+  displayId: string | null; // "OP-01" — human-friendly sequential ID
   hostname: string | null;
   ip: string | null;
   type: AgentType;
   version: string;
   os: string | null;
+  environment: AgentEnv;
   status: string;
   effectiveStatus: string;
   lastHeartbeat: string | null;
@@ -44,6 +55,128 @@ type Agent = {
   eventsSent: number;
   _count: { events: number };
 };
+
+// Shared env styling — used by the Env badge in the table, the filter
+// dropdown, and the Add Agent form. Keeping a single source of truth
+// avoids "PROD=red in one place, PROD=blue in another".
+const AGENT_ENV_META: Record<AgentEnv, { label: string; dot: string; bg: string; text: string; border: string }> = {
+  PROD:    { label: "PROD",    dot: "bg-red-500",       bg: "bg-red-500/10",      text: "text-red-400",      border: "border-red-500/30" },
+  STAGING: { label: "STAGING", dot: "bg-amber-400",     bg: "bg-amber-500/10",    text: "text-amber-300",    border: "border-amber-500/30" },
+  UAT:     { label: "UAT",     dot: "bg-blue-500",      bg: "bg-blue-500/10",     text: "text-blue-300",     border: "border-blue-500/30" },
+};
+
+// Agent version badge — shows version + status icon (up-to-date / outdated / below-min).
+// Source of truth for "what's current" is src/lib/agent-versions.ts (read from agent.py).
+function AgentVersionBadge({ version }: { version: string | null | undefined }) {
+  const v = version || "0.0.0";
+  const status = getVersionStatus(v);
+  const meta = {
+    "up-to-date": { dot: "bg-emerald-500", text: "text-emerald-300", bg: "bg-emerald-500/10", border: "border-emerald-500/30", title: "Up-to-date" },
+    "outdated":   { dot: "bg-amber-400",   text: "text-amber-300",   bg: "bg-amber-500/10",   border: "border-amber-500/30",   title: `Outdated (latest ${AGENT_COMPAT.latest})` },
+    "below-min":  { dot: "bg-red-500",     text: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/30",     title: `Below minimum (min ${AGENT_COMPAT.min})` },
+  }[status];
+  return (
+    <div
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono border ${meta.bg} ${meta.text} ${meta.border}`}
+      title={meta.title}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+      v{v}
+      {status !== "up-to-date" && (
+        <ArrowUpCircle className="w-3 h-3 opacity-70" />
+      )}
+    </div>
+  );
+}
+
+// ── OS detection (derived from /etc/os-release, agent reports raw string) ──
+type OsFamily = "ubuntu" | "debian" | "rhel" | "centos" | "fedora" | "rocky" | "almalinux" | "arch" | "alpine" | "amazon" | "windows" | "macos" | "freebsd" | "other";
+
+// Extract compact version (e.g. "24.04", "12", "9.4") from a raw OS string.
+// Priority: major.minor(.patch) > single number. Skips tokens prefixed by
+// "v" (Alpine v3.20 → 3.20) and lone single-digit numbers adjacent to
+// letters. Returns null if no version-like token is found.
+function extractVersion(raw: string): string | null {
+  // Strip parenthetical codenames so "(bookworm)" doesn't pollute results
+  const cleaned = raw.replace(/\s*\([^)]*\)\s*/g, " ");
+  // Strip "LTS", "Server", "Edition" suffixes (decoration only).
+  // Also strip "v" prefix before numbers (Alpine v3.20 → 3.20).
+  const stripped = cleaned
+    .replace(/\bLTS\b/gi, "")
+    .replace(/\bServer Edition\b/gi, "")
+    .replace(/\bServer\b/gi, "")
+    .replace(/\bEdition\b/gi, "")
+    .replace(/\bLinux\b/gi, "") // "Ubuntu 24.04.4 LTS" → "Ubuntu 24.04.4"
+    .replace(/v(\d)/gi, "$1"); // "Alpine v3.20" → "Alpine 3.20"
+
+  // Prefer X.Y or X.Y.Z pattern (skip those preceded by literal "v")
+  // Lookbehind not supported in older browsers, so use capture group + check
+  const majorMinor = stripped.match(/(?:^|[^v\w])(\d+\.\d+(?:\.\d+)?)/);
+  if (majorMinor) return majorMinor[1].replace(/\.0$/, "");
+
+  // Fallback: single major number (Debian 12, CentOS 7)
+  // Reject lone digits after ".v" or similar — accept only if NOT followed by ".digit"
+  const major = stripped.match(/(?:^|[^\w.])(\d+)(?!\.\d)/);
+  if (major) return major[1];
+
+  return null;
+}
+
+function classifyOs(raw: string | null | undefined): { family: OsFamily; label: string; version: string | null; full: string } {
+  if (!raw) return { family: "other", label: "Unknown", version: null, full: "Not yet reported" };
+  const s = raw.toLowerCase();
+  const version = extractVersion(raw);
+
+  let family: OsFamily = "other";
+  let label = raw;
+  if (s.includes("ubuntu"))   { family = "ubuntu";   label = "Ubuntu"; }
+  else if (s.includes("debian"))   { family = "debian";   label = "Debian"; }
+  else if (s.includes("rocky"))    { family = "rocky";    label = "Rocky"; }
+  else if (s.includes("almalinux") || s.includes("alma")) { family = "almalinux"; label = "AlmaLinux"; }
+  else if (s.includes("centos"))   { family = "centos";   label = "CentOS"; }
+  else if (s.includes("rhel") || s.includes("red hat")) { family = "rhel"; label = "RHEL"; }
+  else if (s.includes("fedora"))   { family = "fedora";   label = "Fedora"; }
+  else if (s.includes("arch"))     { family = "arch";     label = "Arch"; }
+  else if (s.includes("alpine"))   { family = "alpine";   label = "Alpine"; }
+  else if (s.includes("amazon"))   { family = "amazon";   label = "Amazon Linux"; }
+  else if (s.includes("windows"))  { family = "windows";  label = "Windows"; }
+  else if (s.includes("darwin") || s.includes("macos")) { family = "macos"; label = "macOS"; }
+  else if (s.includes("freebsd"))  { family = "freebsd";  label = "FreeBSD"; }
+
+  return { family, label, version, full: raw };
+}
+
+const AGENT_OS_META: Record<OsFamily, { bg: string; text: string; border: string }> = {
+  ubuntu:    { bg: "bg-orange-500/10",   text: "text-orange-300",  border: "border-orange-500/20" },
+  debian:    { bg: "bg-rose-500/10",     text: "text-rose-300",    border: "border-rose-500/20" },
+  rhel:      { bg: "bg-red-500/10",      text: "text-red-300",     border: "border-red-500/20" },
+  centos:    { bg: "bg-yellow-500/10",   text: "text-yellow-300",  border: "border-yellow-500/20" },
+  fedora:    { bg: "bg-blue-500/10",     text: "text-blue-300",    border: "border-blue-500/20" },
+  rocky:     { bg: "bg-emerald-500/10",  text: "text-emerald-300", border: "border-emerald-500/20" },
+  almalinux: { bg: "bg-amber-500/10",    text: "text-amber-300",   border: "border-amber-500/20" },
+  arch:      { bg: "bg-cyan-500/10",     text: "text-cyan-300",    border: "border-cyan-500/20" },
+  alpine:    { bg: "bg-sky-500/10",      text: "text-sky-300",     border: "border-sky-500/20" },
+  amazon:    { bg: "bg-orange-600/10",   text: "text-orange-300",  border: "border-orange-600/20" },
+  windows:   { bg: "bg-blue-600/10",     text: "text-blue-300",    border: "border-blue-600/20" },
+  macos:     { bg: "bg-zinc-500/10",     text: "text-zinc-300",    border: "border-zinc-500/20" },
+  freebsd:   { bg: "bg-red-600/10",      text: "text-red-300",     border: "border-red-600/20" },
+  other:     { bg: "bg-zinc-500/10",     text: "text-zinc-400",    border: "border-zinc-500/20" },
+};
+
+function AgentOsBadge({ os }: { os: string | null }) {
+  const { family, label, version, full } = classifyOs(os);
+  const meta = AGENT_OS_META[family];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono border ${meta.bg} ${meta.text} ${meta.border}`}
+      title={full}
+    >
+      <Cpu className="w-3 h-3" />
+      <span className="font-semibold">{label}</span>
+      {version && <span className="opacity-80">{version}</span>}
+    </span>
+  );
+}
 
 type CreatedCredentials = {
   agentId: string;
@@ -64,6 +197,7 @@ export function AgentsSection() {
     creds: CreatedCredentials;
     name: string;
     type: AgentType;
+    os: "LINUX" | "WINDOWS";
   } | null>(null);
   const [rotatedCreds, setRotatedCreds] = useState<CreatedCredentials | null>(
     null
@@ -73,6 +207,96 @@ export function AgentsSection() {
   const activeAgents = agents.filter((a) => a.effectiveStatus !== "REVOKED");
   const revokedAgents = agents.filter((a) => a.effectiveStatus === "REVOKED");
   const visibleAgents = showRevoked ? agents : activeAgents;
+
+  // ── Resync IP ─────────────────────────────────────────────────
+  // Admin override: rewrite the agent row's IP from the dashboard.
+  // Useful when an agent is stuck reporting a public/NAT IP and the
+  // owner wants to fix the display without SSHing into the host.
+  // The next heartbeat will overwrite this if the agent is still
+  // running with the old detection logic — pair with a service
+  // restart on the host for a permanent fix.
+  const [resyncTarget, setResyncTarget] = useState<Agent | null>(null);
+  const [resyncIp, setResyncIp] = useState("");
+  const [resyncBusy, setResyncBusy] = useState(false);
+  const [resyncErr, setResyncErr] = useState<string | null>(null);
+
+  const openResync = (a: Agent) => {
+    setResyncTarget(a);
+    setResyncIp(a.ip ?? "");
+    setResyncErr(null);
+  };
+
+  const openUpdateAgent = (a: Agent) => {
+    setUpdateTarget(a);
+    setUpdateCommandCopied(false);
+    // Derive serverUrl from current page origin (works for dev + prod).
+    if (typeof window !== "undefined") {
+      setServerUrl(window.location.origin);
+    }
+  };
+
+  const copyUpdateCommand = async () => {
+    if (!updateTarget || !serverUrl) return;
+    const cmd = buildUpdateCommand(serverUrl);
+    await copyToClipboard(cmd);
+    setUpdateCommandCopied(true);
+    toast.success("Update command copied to clipboard");
+    setTimeout(() => setUpdateCommandCopied(false), 2000);
+  };
+
+  const submitResync = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resyncTarget) return;
+    setResyncBusy(true);
+    setResyncErr(null);
+    try {
+      const r = await fetch(`/api/agents/${resyncTarget.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip: resyncIp.trim() }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setResyncTarget(null);
+        load();
+      } else {
+        setResyncErr(data.error || "Failed to update IP");
+      }
+    } catch (e) {
+      setResyncErr(String(e));
+    } finally {
+      setResyncBusy(false);
+    }
+  };
+
+  // ── Filters ──────────────────────────────────────────────────────
+  // Search matches agent name OR hostname OR ip, case-insensitive.
+  // Env filter is a single-select ("all" or one of the 5 env values).
+  // Filtering happens client-side: the agent list is small (<100 rows in
+  // typical deployments), and a full re-fetch on every keystroke would
+  // create visible latency. When the list grows past a few hundred rows,
+  // switch this to debounced server-side filtering via searchParams.
+  const [search, setSearch] = useState("");
+  const [envFilter, setEnvFilter] = useState<AgentEnv | "ALL">("ALL");
+
+  const filteredAgents = visibleAgents.filter((a) => {
+    if (envFilter !== "ALL" && a.environment !== envFilter) return false;
+    if (!search.trim()) return true;
+    const q = search.trim().toLowerCase();
+    return (
+      a.name.toLowerCase().includes(q) ||
+      (a.hostname?.toLowerCase().includes(q) ?? false) ||
+      (a.ip?.toLowerCase().includes(q) ?? false)
+    );
+  });
+
+  const ENV_OPTIONS: { value: AgentEnv | "ALL"; label: string }[] = [
+    { value: "ALL",     label: "All environments" },
+    { value: "PROD",    label: "PROD (Production)" },
+    { value: "STAGING", label: "STAGING" },
+    { value: "UAT",     label: "UAT" },
+  ];
 
   const downloadBundle = async (type: AgentType) => {
     setShowDownload(false);
@@ -120,6 +344,9 @@ export function AgentsSection() {
 
   const [revokeTarget, setRevokeTarget] = useState<Agent | null>(null);
   const [rotateTarget, setRotateTarget] = useState<Agent | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<Agent | null>(null);
+  const [serverUrl, setServerUrl] = useState<string>("");
+  const [updateCommandCopied, setUpdateCommandCopied] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [rotating, setRotating] = useState(false);
 
@@ -240,19 +467,7 @@ export function AgentsSection() {
                   onClick={() => setShowDownload(false)}
                 />
                 <div className="absolute right-0 mt-1 w-56 rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl shadow-black/50 z-20 overflow-hidden">
-                  <button
-                    onClick={() => downloadBundle("BASH")}
-                    className="w-full px-3 py-2.5 text-left text-sm hover:bg-zinc-800 flex items-center gap-2.5 text-zinc-100"
-                  >
-                    <Terminal className="w-4 h-4 text-emerald-400" />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium">Bash agent</div>
-                      <div className="text-[10px] text-zinc-500 font-mono">
-                        bash/ · zero-dep
-                      </div>
-                    </div>
-                  </button>
-                  <div className="border-t border-zinc-800" />
+                  {/* Bash download removed 2026-06-20 (deprecated). */}
                   <button
                     onClick={() => downloadBundle("PYTHON")}
                     className="w-full px-3 py-2.5 text-left text-sm hover:bg-zinc-800 flex items-center gap-2.5 text-zinc-100"
@@ -311,12 +526,90 @@ export function AgentsSection() {
       ) : (
         <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl overflow-hidden">
           {/* Filter bar */}
-          <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-900/30">
-            <div className="text-xs text-zinc-500">
-              Showing <span className="text-zinc-300 font-medium">{visibleAgents.length}</span> of{" "}
-              <span className="text-zinc-300 font-medium">{agents.length}</span> agents
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-zinc-800 bg-zinc-900/30">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              {/* Search: name, hostname, or IP (case-insensitive) */}
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name, hostname, or IP…"
+                  className="w-full pl-8 pr-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-emerald-500/50"
+                />
+                {search && (
+                  <button
+                    onClick={() => setSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+                    title="Clear search"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+
+              {/* Environment filter */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
+                  Env:
+                </span>
+                <div className="flex gap-1">
+                  {ENV_OPTIONS.map((opt) => {
+                    const active = envFilter === opt.value;
+                    const meta =
+                      opt.value === "ALL"
+                        ? null
+                        : AGENT_ENV_META[opt.value as AgentEnv];
+                    return (
+                      <button
+                        key={opt.value}
+                        onClick={() => setEnvFilter(opt.value)}
+                        className={`px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase tracking-wider transition-colors flex items-center gap-1 ${
+                          active
+                            ? opt.value === "ALL"
+                              ? "bg-zinc-700 text-zinc-100 border border-zinc-600"
+                              : `${meta?.bg} ${meta?.text} border ${meta?.border}`
+                            : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700"
+                        }`}
+                        title={
+                          opt.value === "ALL"
+                            ? "Show agents from all environments"
+                            : `Filter to ${opt.value} only`
+                        }
+                      >
+                        {meta && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${meta.dot}`}
+                          />
+                        )}
+                        {opt.value === "ALL" ? "ALL" : meta?.label ?? opt.value}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-zinc-500 whitespace-nowrap">
+              <span>
+                Showing{" "}
+                <span className="text-zinc-300 font-medium">
+                  {filteredAgents.length}
+                </span>{" "}
+                of{" "}
+                <span className="text-zinc-300 font-medium">
+                  {visibleAgents.length}
+                </span>{" "}
+                agents
+                {(search || envFilter !== "ALL") &&
+                  filteredAgents.length !== visibleAgents.length && (
+                    <span className="ml-1 text-emerald-400">
+                      (filtered)
+                    </span>
+                  )}
+              </span>
               {revokedAgents.length > 0 && (
-                <span className="ml-2 text-zinc-600">
+                <span className="text-zinc-600">
                   · {revokedAgents.length} revoked hidden
                 </span>
               )}
@@ -347,76 +640,100 @@ export function AgentsSection() {
 
           <table className="w-full text-sm">
             <thead className="bg-zinc-900/60 text-zinc-500 text-xs uppercase">
-              <tr>
-                <th className="px-4 py-2 text-left">Status</th>
-                <th className="px-4 py-2 text-left">Name</th>
-                <th className="px-4 py-2 text-left">Type</th>
-                <th className="px-4 py-2 text-left">Hostname</th>
-                <th className="px-4 py-2 text-left">IP</th>
-                <th className="px-4 py-2 text-right">Events</th>
-                <th className="px-4 py-2 text-left">Last heartbeat</th>
-                <th className="px-4 py-2 text-right">Actions</th>
+              <tr className="divide-x divide-zinc-800">
+                <th className="px-4 py-2 text-center">Status</th>
+                <th className="px-4 py-2 text-center">ID</th>
+                <th className="px-4 py-2 text-center">Name</th>
+                <th className="px-4 py-2 text-center">Version</th>
+                <th className="px-4 py-2 text-center">OS</th>
+                <th className="px-4 py-2 text-center">Env</th>
+                <th className="px-4 py-2 text-center">Hostname</th>
+                <th className="px-4 py-2 text-center">IP</th>
+                <th className="px-4 py-2 text-center">Events</th>
+                <th className="px-4 py-2 text-center">Last heartbeat</th>
+                <th className="px-4 py-2 text-center">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {visibleAgents.map((a) => {
+              {filteredAgents.map((a) => {
                 const isRevoked = a.effectiveStatus === "REVOKED";
                 return (
                   <tr
                     key={a.id}
-                    className={`border-t border-zinc-800 hover:bg-zinc-900/40 ${
+                    className={`border-t border-zinc-800 hover:bg-zinc-900/40 divide-x divide-zinc-800 ${
                       isRevoked ? "opacity-60" : ""
                     }`}
                   >
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5 text-center">
                       <AgentStatusBadge status={a.effectiveStatus} />
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5 text-center">
+                      {a.displayId ? (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-semibold bg-violet-500/10 text-violet-300 border border-violet-500/30"
+                          title={`Sequential display ID (cuid: ${a.id})`}
+                        >
+                          {a.displayId}
+                        </span>
+                      ) : (
+                        <span
+                          className="text-zinc-500 font-mono text-xs"
+                          title={a.id}
+                        >
+                          {a.id.slice(0, 10)}…
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
                       <div className="font-medium text-zinc-100">{a.name}</div>
-                      <div className="text-xs text-zinc-500 font-mono">
-                        {a.id.slice(0, 12)}…
-                      </div>
                     </td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono ${
-                          a.type === "PYTHON"
-                            ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                            : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                        }`}
-                      >
-                        {a.type === "PYTHON" ? (
-                          <Activity className="w-3 h-3" />
-                        ) : (
-                          <Terminal className="w-3 h-3" />
-                        )}
-                        {a.type}
-                      </span>
+                    <td className="px-4 py-2.5 text-center">
+                      <AgentVersionBadge version={a.version} />
                     </td>
-                    <td className="px-4 py-2.5 text-zinc-300 font-mono text-xs">
+                    <td className="px-4 py-2.5 text-center">
+                      <AgentOsBadge os={a.os} />
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      <AgentEnvBadge env={a.environment} />
+                    </td>
+                    <td className="px-4 py-2.5 text-center text-zinc-300 font-mono text-xs">
                       {a.hostname || <span className="text-zinc-600">—</span>}
                     </td>
-                    <td className="px-4 py-2.5 text-zinc-300 font-mono text-xs">
+                    <td className="px-4 py-2.5 text-center text-zinc-300 font-mono text-xs">
                       {a.ip || <span className="text-zinc-600">—</span>}
                     </td>
-                    <td className="px-4 py-2.5 text-right text-zinc-300 font-mono">
+                    <td className="px-4 py-2.5 text-center text-zinc-300 font-mono">
                       {a._count.events}
                     </td>
-                    <td className="px-4 py-2.5 text-zinc-500 text-xs">
+                    <td className="px-4 py-2.5 text-center text-zinc-500 text-xs">
                       {a.lastHeartbeat
                         ? new Date(a.lastHeartbeat).toLocaleString()
                         : "Never"}
                     </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="flex gap-1 justify-end">
+                    <td className="px-4 py-2.5 text-center">
+                      <div className="flex gap-1 justify-center">
                         {!isRevoked && (
                           <>
+                            <button
+                              onClick={() => openResync(a)}
+                              className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-cyan-400"
+                              title={`Resync IP (currently ${a.ip ?? "—"})`}
+                            >
+                              <Network className="w-4 h-4" />
+                            </button>
                             <button
                               onClick={() => rotate(a)}
                               className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-emerald-400"
                               title="Rotate token (issue new, old becomes invalid)"
                             >
                               <RotateCw className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => openUpdateAgent(a)}
+                              className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-cyan-400"
+                              title={`Update Agent (current v${a.version}, latest v${AGENT_COMPAT.latest})`}
+                            >
+                              <ArrowUpCircle className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => revoke(a)}
@@ -444,15 +761,32 @@ export function AgentsSection() {
               })}
             </tbody>
           </table>
+          {filteredAgents.length === 0 && visibleAgents.length > 0 && (
+            <div className="p-8 text-center bg-zinc-900/20 border-t border-zinc-800">
+              <Search className="w-6 h-6 text-zinc-600 mx-auto mb-2" />
+              <p className="text-zinc-400 text-sm">
+                No agents match your filters
+              </p>
+              <button
+                onClick={() => {
+                  setSearch("");
+                  setEnvFilter("ALL");
+                }}
+                className="mt-2 text-xs text-emerald-400 hover:text-emerald-300"
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {showAdd && (
         <AddAgentModal
           onClose={() => setShowAdd(false)}
-          onCreated={(creds, name, type) => {
+          onCreated={(creds, name, type, os) => {
             setShowAdd(false);
-            setCreatedCreds({ creds, name, type });
+            setCreatedCreds({ creds, name, type, os });
             load();
           }}
         />
@@ -464,6 +798,7 @@ export function AgentsSection() {
           creds={createdCreds.creds}
           name={createdCreds.name}
           type={createdCreds.type}
+          os={createdCreds.os}
           onClose={() => setCreatedCreds(null)}
         />
       )}
@@ -472,8 +807,84 @@ export function AgentsSection() {
           title="Token Rotated — Update Agent Config"
           warning="Old token is now invalid. Copy new token to agent's config file."
           creds={rotatedCreds}
+          os="LINUX"
           onClose={() => setRotatedCreds(null)}
         />
+      )}
+
+      {resyncTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
+                <Network className="w-5 h-5 text-cyan-400" />
+                Resync Agent IP
+              </h2>
+              <button
+                onClick={() => setResyncTarget(null)}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mb-4">
+              <span className="font-mono text-zinc-300">{resyncTarget.name}</span>{" "}
+              <span className="text-zinc-600">·</span>{" "}
+              <span className="font-mono">{resyncTarget.hostname ?? "—"}</span>
+            </p>
+            <form onSubmit={submitResync} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">
+                  New IPv4 address
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={resyncIp}
+                  onChange={(e) => setResyncIp(e.target.value)}
+                  placeholder="172.16.19.235"
+                  pattern="^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-100 text-sm font-mono focus:outline-none focus:border-cyan-500"
+                />
+                <p className="text-[10px] text-zinc-600 mt-1.5">
+                  This updates the agent row in the DB. If the agent is still
+                  running with old detection logic, the next heartbeat
+                  (≤30s) will overwrite this — pair with{" "}
+                  <span className="font-mono">systemctl restart openshield-agent</span>{" "}
+                  on the host for a permanent fix.
+                </p>
+              </div>
+              {resyncErr && (
+                <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                  {resyncErr}
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setResyncTarget(null)}
+                  className="flex-1 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={resyncBusy}
+                  className="flex-1 px-3 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-zinc-950 text-sm font-medium flex items-center justify-center gap-1.5"
+                >
+                  {resyncBusy ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Updating…
+                    </>
+                  ) : (
+                    "Update IP"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Revoke confirmation */}
@@ -536,6 +947,90 @@ export function AgentsSection() {
         }
         confirmLabel="Delete Forever"
       />
+
+      {/* Update Agent — show version status + copy update command */}
+      {updateTarget && (
+        <Modal open onClose={() => setUpdateTarget(null)} size="md">
+          {(() => {
+            const status = getVersionStatus(updateTarget.version);
+            const statusMeta = {
+              "up-to-date": { dot: "bg-emerald-500", text: "text-emerald-300", bg: "bg-emerald-500/10", border: "border-emerald-500/30", label: "Up-to-date", desc: "Agent ini sudah versi terbaru." },
+              "outdated":   { dot: "bg-amber-400",   text: "text-amber-300",   bg: "bg-amber-500/10",   border: "border-amber-500/30",   label: "Outdated", desc: "Versi baru tersedia. Sebaiknya update untuk dapat fitur/perbaikan terbaru." },
+              "below-min":  { dot: "bg-red-500",     text: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/30",     label: "Below Minimum", desc: "Agent ini di bawah versi minimum yang disupport server. Beberapa fitur mungkin tidak jalan." },
+            }[status];
+            const updateCmd = serverUrl ? buildUpdateCommand(serverUrl) : "Loading...";
+            return (
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${statusMeta.bg} ${statusMeta.border} border`}>
+                    <ArrowUpCircle className={`h-5 w-5 ${statusMeta.text}`} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-zinc-100">Update Agent</h3>
+                    <div className="text-xs text-zinc-500">
+                      {updateTarget.displayId && (
+                        <span className="text-violet-300 font-mono mr-2">{updateTarget.displayId}</span>
+                      )}
+                      <span className="font-mono">{updateTarget.name}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`rounded-lg p-3 mb-4 border ${statusMeta.bg} ${statusMeta.border}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`w-2 h-2 rounded-full ${statusMeta.dot}`} />
+                    <span className={`text-sm font-semibold ${statusMeta.text}`}>{statusMeta.label}</span>
+                  </div>
+                  <div className="text-xs text-zinc-400">{statusMeta.desc}</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-zinc-900/50 rounded p-2">
+                      <div className="text-zinc-500">Current</div>
+                      <div className="font-mono text-zinc-200">v{updateTarget.version}</div>
+                    </div>
+                    <div className="bg-zinc-900/50 rounded p-2">
+                      <div className="text-zinc-500">Latest</div>
+                      <div className="font-mono text-emerald-300">v{AGENT_COMPAT.latest}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {status !== "up-to-date" && (
+                  <>
+                    <div className="text-xs text-zinc-400 mb-2">
+                      Run command ini di host <span className="font-mono text-zinc-200">{updateTarget.hostname ?? updateTarget.name}</span>:
+                    </div>
+                    <div className="relative">
+                      <pre className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-xs font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap break-all">
+                        {updateCmd}
+                      </pre>
+                      <button
+                        onClick={copyUpdateCommand}
+                        className="absolute top-2 right-2 p-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                        title="Copy command"
+                      >
+                        {updateCommandCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-2">
+                      Setelah update, agent restart dalam 1–2 detik dan langsung kirim versi baru di heartbeat berikutnya.
+                      Dashboard badge akan update otomatis (maks 30s).
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-end gap-2 mt-5">
+                  <button
+                    onClick={() => setUpdateTarget(null)}
+                    className="px-3 py-1.5 rounded text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -593,18 +1088,62 @@ function AgentStatusBadge({ status }: { status: string }) {
   );
 }
 
+function AgentEnvBadge({ env }: { env: AgentEnv }) {
+  // AGENT_ENV_META is hoisted to module scope (defined near the Agent type
+  // at the top of this file) so the table row, the filter dropdown, and the
+  // Add Agent form all show identical styling.
+  const m = AGENT_ENV_META[env] ?? AGENT_ENV_META.PROD;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider ${m.bg} ${m.text} border ${m.border}`}
+      title={`Deployment environment: ${m.label}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+      {m.label}
+    </span>
+  );
+}
+
 function AddAgentModal({
   onClose,
   onCreated,
 }: {
   onClose: () => void;
-  onCreated: (creds: CreatedCredentials, name: string, type: AgentType) => void;
+  onCreated: (
+    creds: CreatedCredentials,
+    name: string,
+    type: AgentType,
+    os: "LINUX" | "WINDOWS"
+  ) => void;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<AgentType>("BASH");
-  const [description, setDescription] = useState("");
+  // 2026-06-20: Bash runtime removed (pipe_read hang). Linux+Python only.
+  // OS picker hidden until Windows installer (PowerShell) ships.
+  // Kept AgentOS type for backward compatibility with onCreated() signature.
+  type AgentOS = "LINUX" | "WINDOWS";
+  const [os] = useState<AgentOS>("LINUX");
+  const [type, setType] = useState<AgentType>("PYTHON");
+  type EnvType = "PROD" | "STAGING" | "UAT";
+  const [environment, setEnvironment] = useState<EnvType>("PROD");
+
+  // OS selector removed 2026-06-20 — Linux+Python only until Windows installer ships.
+  // Kept as constant for type compatibility; UI selector hidden.
+  const setOs = (_next: "LINUX" | "WINDOWS") => {
+    // no-op: OS picker is hidden in the modal
+  };
+  // 2026-06-20: Description field removed from UI (low value, users confused what to write).
+  // Backend still accepts it for backward compat — it's just not surfaced in this form.
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Python Requirements starts collapsed — user expands to see full distro matrix.
+  // Default collapsed keeps the modal compact; the quick-glance "Min: 3.11+" stays visible.
+  const [showPythonReqs, setShowPythonReqs] = useState(false);
+
+  const ENV_META: Record<EnvType, { label: string; desc: string; dot: string; ring: string }> = {
+    PROD:    { label: "Production",  desc: "Live customer-facing",   dot: "bg-red-500",      ring: "ring-red-500/40" },
+    STAGING: { label: "Staging",     desc: "Pre-production mirror",   dot: "bg-amber-400",    ring: "ring-amber-400/40" },
+    UAT:     { label: "UAT",         desc: "User-acceptance testing", dot: "bg-blue-500",     ring: "ring-blue-500/40" },
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -615,11 +1154,15 @@ function AddAgentModal({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, type, description: description || undefined }),
+        body: JSON.stringify({
+          name,
+          type,
+          environment,
+        }),
       });
       const data = await r.json();
       if (data.ok && data.credentials) {
-        onCreated(data.credentials, name, type);
+        onCreated(data.credentials, name, type, os);
       } else {
         setErr(data.error || "Failed to create agent");
       }
@@ -661,52 +1204,184 @@ function AddAgentModal({
               <span className="font-mono">staging-db-sg-02</span>
             </p>
           </div>
+          {/* OS selector removed 2026-06-20 — Linux+Python only.
+              Windows installer (PowerShell) is planned but not yet available. */}
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">
-              Type
+              Operating System
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["BASH", "PYTHON"] as AgentType[]).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setType(t)}
-                  className={`p-3 rounded-lg border text-left ${
-                    type === t
-                      ? "border-emerald-500 bg-emerald-500/10"
-                      : "border-zinc-700 bg-zinc-800/50 hover:border-zinc-600"
-                  }`}
-                >
-                  <div className="font-medium text-sm text-zinc-100 flex items-center gap-2">
-                    {t === "PYTHON" ? (
-                      <Activity className="w-4 h-4 text-blue-400" />
-                    ) : (
-                      <Terminal className="w-4 h-4 text-amber-400" />
-                    )}
-                    {t}
-                  </div>
-                  <div className="text-xs text-zinc-500 mt-1">
-                    {t === "PYTHON"
-                      ? "FIM + process monitor + metrics"
-                      : "Log tailing only, zero deps"}
-                  </div>
-                </button>
-              ))}
+            <div className="px-3 py-2.5 rounded-lg border border-zinc-700 bg-zinc-800/50 flex items-center gap-2.5">
+              <Terminal className="w-4 h-4 text-amber-400" />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-zinc-100">Linux</div>
+                <div className="text-xs text-zinc-500">
+                  Ubuntu, Debian, RHEL, Rocky, Alpine… (Windows coming soon)
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Python Requirements — collapsible, default collapsed.
+              Quick-glance "Min 3.11+" stays visible; user clicks to expand distro matrix. */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowPythonReqs((v) => !v)}
+              className="w-full px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10 transition-colors flex items-center gap-2.5 text-left"
+              aria-expanded={showPythonReqs}
+              aria-controls="python-reqs-details"
+            >
+              {showPythonReqs ? (
+                <ChevronDown className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              )}
+              <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              <div className="flex-1 flex items-baseline gap-2 flex-wrap">
+                <span className="text-xs font-medium text-zinc-400">
+                  Python Requirements
+                </span>
+                <span className="text-xs font-semibold text-zinc-100">
+                  Min: 3.11+
+                </span>
+                <span className="text-[11px] text-zinc-500">
+                  (3.12 recommended)
+                </span>
+              </div>
+              <span className="text-[10px] text-emerald-400 font-medium">
+                auto-install ✓
+              </span>
+            </button>
+            {showPythonReqs && (
+              <div
+                id="python-reqs-details"
+                className="mt-1.5 px-3 py-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 text-xs text-zinc-300 space-y-1.5"
+              >
+                <div className="text-zinc-400">
+                  Installer will{" "}
+                  <span className="text-emerald-400 font-medium">
+                    auto-install
+                  </span>{" "}
+                  if your distro ships with older Python:
+                </div>
+                <ul className="text-zinc-400 space-y-0.5 ml-1">
+                  <li className="flex items-center gap-1.5">
+                    <span className="inline-block w-1 h-1 rounded-full bg-zinc-600" />
+                    <span className="font-mono text-zinc-300">Ubuntu/Debian</span>
+                    <span className="text-zinc-500">→ deadsnakes PPA</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="inline-block w-1 h-1 rounded-full bg-zinc-600" />
+                    <span className="font-mono text-zinc-300">RHEL/Rocky 8+</span>
+                    <span className="text-zinc-500">→ dnf module python3.12</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="inline-block w-1 h-1 rounded-full bg-zinc-600" />
+                    <span className="font-mono text-zinc-300">CentOS 7</span>
+                    <span className="text-zinc-500">→ SCL rh-python38</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="inline-block w-1 h-1 rounded-full bg-zinc-600" />
+                    <span className="font-mono text-zinc-300">Alpine</span>
+                    <span className="text-zinc-500">→ apk add python3</span>
+                  </li>
+                </ul>
+                <div className="text-[10px] text-zinc-500 pt-1 border-t border-zinc-800/60">
+                  ⚠ Python 3.10 and older are EOL — installer will refuse and
+                  exit with manual instructions.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Type — runtime agent. Linux is PYTHON-only (bash removed 2026-06-20). */}
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">
-              Description (optional)
+              Agent Runtime
             </label>
-            <input
-              type="text"
-              maxLength={256}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Production web server - tier 1"
-              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-100 text-sm focus:outline-none focus:border-emerald-500"
-            />
+            <div className="grid grid-cols-1 gap-2">
+              {/* Bash agent removed 2026-06-20 (pipe_read hang).
+                  Python is now the only supported runtime. */}
+              {(
+                [
+                  {
+                    value: "PYTHON" as AgentType,
+                    label: "Python",
+                    desc: "FIM + process monitor + log tailing",
+                    Icon: Activity,
+                    iconColor: "text-blue-400",
+                    disabled: false,
+                  },
+                ]
+              ).map((opt) => {
+                const active = type === opt.value;
+                const Icon = opt.Icon;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={opt.disabled}
+                    onClick={() => setType(opt.value)}
+                    className={`p-3 rounded-lg border text-left transition-colors ${
+                      active
+                        ? "border-emerald-500 bg-emerald-500/10"
+                        : opt.disabled
+                          ? "border-zinc-800 bg-zinc-900/40 opacity-40 cursor-not-allowed"
+                          : "border-zinc-700 bg-zinc-800/50 hover:border-zinc-600"
+                    }`}
+                  >
+                    <div className="font-medium text-sm text-zinc-100 flex items-center gap-2">
+                      <Icon className={`w-4 h-4 ${opt.iconColor}`} />
+                      {opt.label}
+                    </div>
+                    <div className="text-xs text-zinc-500 mt-1">
+                      {opt.desc}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          {/* Environment */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1">
+              Environment
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["PROD", "STAGING", "UAT"] as const).map((env) => {
+                const meta = ENV_META[env];
+                const active = environment === env;
+                return (
+                  <button
+                    key={env}
+                    type="button"
+                    onClick={() => setEnvironment(env)}
+                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                      active
+                        ? `border-transparent bg-zinc-800 ring-2 ${meta.ring}`
+                        : "border-zinc-700 bg-zinc-800/40 hover:border-zinc-600"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className={`inline-block w-2 h-2 rounded-full ${meta.dot}`} />
+                      <span className="font-medium text-sm text-zinc-100">
+                        {meta.label}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5 leading-tight">
+                      {meta.desc}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-zinc-600 mt-1">
+              Helps group/filter agents by deployment stage. Defaults to{" "}
+              <span className="font-mono">PROD</span>.
+            </p>
+          </div>
+
           {err && (
             <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs">
               <AlertCircle className="w-4 h-4" />
@@ -746,6 +1421,7 @@ function TokenDisplayModal({
   creds,
   name,
   type,
+  os,
   onClose,
 }: {
   title: string;
@@ -753,19 +1429,43 @@ function TokenDisplayModal({
   creds: CreatedCredentials;
   name?: string;
   type?: AgentType;
+  os?: "LINUX" | "WINDOWS";
   onClose: () => void;
 }) {
+  // OS-aware install command. Windows uses PowerShell (iwr | iex);
+  // Linux uses curl|bash. Token embedded in URL (one-time use bearer).
+  const installCmd = (() => {
+    const url = `${creds.serverUrl}/api/install/${(type ?? "python").toLowerCase()}?agent_id=${creds.agentId}&token=${creds.secretToken}`;
+    if (os === "WINDOWS") {
+      // PowerShell: download installer to TEMP then execute as Administrator
+      return `Invoke-WebRequest -Uri "${url}" -OutFile "$env:TEMP\\openshield-install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\\openshield-install.ps1"`;
+    }
+    // Linux / default: bash one-liner
+    return `curl -sL "${url}" | sudo bash`;
+  })();
   const [copiedId, setCopiedId] = useState(false);
   const [copiedToken, setCopiedToken] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState(false);
 
-  const copy = (text: string, which: "id" | "token") => {
-    navigator.clipboard.writeText(text);
+  const copy = async (text: string, which: "id" | "token" | "url" | "cmd") => {
+    const ok = await copyToClipboard(text);
+    if (!ok) {
+      toast.error("Copy failed — please select text manually and Ctrl+C");
+      return;
+    }
     if (which === "id") {
       setCopiedId(true);
       setTimeout(() => setCopiedId(false), 1500);
-    } else {
+    } else if (which === "token") {
       setCopiedToken(true);
       setTimeout(() => setCopiedToken(false), 1500);
+    } else if (which === "url") {
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 1500);
+    } else {
+      setCopiedCmd(true);
+      setTimeout(() => setCopiedCmd(false), 1500);
     }
   };
 
@@ -806,27 +1506,27 @@ function TokenDisplayModal({
           <div className="mb-4 p-3 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm">
             <div className="text-zinc-500 text-xs mb-1">AGENT</div>
             <div className="font-mono text-zinc-100">
-              {name} <span className="text-zinc-500">·</span> {type}
+              {name} <span className="text-zinc-500">·</span> {os} <span className="text-zinc-500">·</span> {type}
             </div>
           </div>
         )}
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
               Agent ID
             </label>
-            <div className="flex gap-1">
+            <div className="flex gap-2">
               <code className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-emerald-400 font-mono text-xs overflow-x-auto">
                 {creds.agentId}
               </code>
               <button
                 onClick={() => copy(creds.agentId, "id")}
-                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300"
-                title="Copy"
+                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg shrink-0 transition-colors"
+                title="Copy Agent ID"
               >
                 {copiedId ? (
-                  <Check className="w-4 h-4 text-emerald-400" />
+                  <Check className="w-4 h-4" />
                 ) : (
                   <Copy className="w-4 h-4" />
                 )}
@@ -835,17 +1535,17 @@ function TokenDisplayModal({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
               Secret Token (shown once)
             </label>
-            <div className="flex gap-1">
-              <code className="flex-1 px-3 py-2 bg-zinc-950 border border-emerald-500/30 rounded-lg text-emerald-300 font-mono text-xs overflow-x-auto break-all">
+            <div className="flex gap-2">
+              <code className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-emerald-400 font-mono text-xs overflow-x-auto break-all">
                 {creds.secretToken}
               </code>
               <button
                 onClick={() => copy(creds.secretToken, "token")}
-                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg"
-                title="Copy"
+                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg shrink-0 transition-colors"
+                title="Copy Secret Token"
               >
                 {copiedToken ? (
                   <Check className="w-4 h-4" />
@@ -857,73 +1557,104 @@ function TokenDisplayModal({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
               Server URL
             </label>
-            <code className="block px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-zinc-300 font-mono text-xs">
-              {creds.serverUrl}
-            </code>
+            <div className="flex gap-2">
+              <code className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-emerald-400 font-mono text-xs overflow-x-auto">
+                {creds.serverUrl}
+              </code>
+              <button
+                onClick={() => copy(creds.serverUrl, "url")}
+                className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg shrink-0 transition-colors"
+                title="Copy Server URL"
+              >
+                {copiedUrl ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
               Config file template
             </label>
             <pre className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-zinc-300 font-mono text-xs overflow-x-auto">
               {configJson}
             </pre>
-            <p className="text-xs text-zinc-600 mt-1">
+            <p className="text-xs text-zinc-600 mt-1.5">
               Save as{" "}
               <span className="font-mono">
-                /etc/openshield/agent.json
+                {os === "WINDOWS"
+                  ? "C:\\ProgramData\\OpenShield\\agent.json"
+                  : "/etc/openshield/agent.json"}
               </span>{" "}
               on the monitored host.
             </p>
           </div>
 
-          {type && (
-            <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-lg">
-              <div className="font-medium text-emerald-300 mb-2 flex items-center gap-2">
+          {type && os && (
+            <div className="mt-2 p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-lg">
+              <div className="font-medium text-emerald-300 mb-2 flex items-center gap-2 text-xs">
                 <Terminal className="w-3.5 h-3.5" />
-                Quick Install — One Command (run on monitored host)
+                Quick Install — One Command (run on monitored host as admin)
               </div>
-              <div className="flex gap-1">
+              <div className="flex gap-2">
                 <code className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-emerald-400 font-mono text-[11px] overflow-x-auto whitespace-pre">
-                  curl -sL &quot;{creds.serverUrl}/api/install/{type.toLowerCase()}?agent_id={creds.agentId}&token={creds.secretToken}&quot; | sudo bash
+                  {installCmd}
                 </code>
                 <button
-                  onClick={() => {
-                    const cmd = `curl -sL "${creds.serverUrl}/api/install/${type.toLowerCase()}?agent_id=${creds.agentId}&token=${creds.secretToken}" | sudo bash`;
-                    navigator.clipboard.writeText(cmd);
-                    setCopiedToken(true);
-                    setTimeout(() => setCopiedToken(false), 1500);
-                  }}
-                  className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg shrink-0"
+                  onClick={() => copy(installCmd, "cmd")}
+                  className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 rounded-lg shrink-0 transition-colors"
                   title="Copy one-command install"
                 >
-                  {copiedToken ? (
+                  {copiedCmd ? (
                     <Check className="w-4 h-4" />
                   ) : (
                     <Copy className="w-4 h-4" />
                   )}
                 </button>
               </div>
-              <p className="text-[10px] text-zinc-500 mt-2 leading-relaxed">
-                Auto-detects hostname/IP/OS, writes{" "}
-                <span className="font-mono">/etc/openshield/agent.json</span>,
-                installs systemd service, starts agent. Token is embedded in URL
-                (one-time use) — tidak perlu copy file manual.
+              <p className="text-[10px] text-zinc-500 mt-2.5 leading-relaxed">
+                {os === "WINDOWS" ? (
+                  <>
+                    Downloads installer, registers{" "}
+                    <span className="font-mono">OpenShieldAgent</span> as a
+                    Windows Service, and starts it. Requires PowerShell
+                    admin. Token embedded in URL (one-time use) — no manual
+                    config copy needed.
+                  </>
+                ) : (
+                  <>
+                    Auto-detects hostname/IP/OS, writes{" "}
+                    <span className="font-mono">/etc/openshield/agent.json</span>,
+                    installs systemd service, starts agent. Token embedded in URL
+                    (one-time use) — tidak perlu copy file manual.
+                  </>
+                )}
               </p>
             </div>
           )}
         </div>
 
-        <button
-          onClick={onClose}
-          className="w-full mt-6 px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium text-sm"
-        >
-          I've saved the credentials — close
-        </button>
+        <div className="flex gap-2 mt-6">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium text-sm border border-zinc-700 transition-colors"
+            title="Agent sudah dibuat di DB, lo bisa install nanti lewat menu Agents"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-medium text-sm transition-colors"
+          >
+            I've saved the credentials — close
+          </button>
+        </div>
       </div>
     </div>
   );

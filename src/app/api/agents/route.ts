@@ -28,6 +28,7 @@ import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/security/crypto";
 import { requireRole } from "@/lib/security/rbac";
 import { audit } from "@/lib/security/audit";
+import { generateNextDisplayId } from "@/lib/agent-display-id";
 
 export async function GET(_req: NextRequest) {
   const session = await requireRole("OWNER", "ADMIN");
@@ -38,12 +39,14 @@ export async function GET(_req: NextRequest) {
     select: {
       id: true,
       name: true,
+      displayId: true,
       hostname: true,
       ip: true,
       type: true,
       version: true,
       os: true,
       kernel: true,
+      environment: true,
       status: true,
       lastHeartbeat: true,
       lastError: true,
@@ -72,6 +75,9 @@ export async function GET(_req: NextRequest) {
 const createSchema = z.object({
   name: z.string().min(1).max(128),
   type: z.enum(["BASH", "PYTHON"]),
+  // Deployment environment — defaults to PROD if not provided.
+  // Helps group/filter agents by stage (e.g. show all staging agents).
+  environment: z.enum(["PROD", "STAGING", "UAT"]).default("PROD"),
   description: z.string().max(1024).optional(),
   // Optional default config — admin can pre-fill which logs the agent should watch
   defaultConfig: z
@@ -128,12 +134,25 @@ export async function POST(req: NextRequest) {
       type: body.type,
       version: "0.0.0", // updated on first heartbeat
       status: "REGISTERED",
+      environment: body.environment,
       secretEnc,
       config: defaultConfig as Prisma.InputJsonValue,
       // hostname/ip/os/kernel populated on first heartbeat
       eventsSent: 0,
+      // Sequential display ID (e.g. "OP-01") assigned atomically.
+      // Atomic via SERIALIZABLE transaction — race-safe for concurrent
+      // agent creation (e.g. CI registering multiple machines at once).
+      displayId: await generateNextDisplayId(prisma),
     },
-    select: { id: true, name: true, type: true, status: true, registeredAt: true },
+    select: {
+      id: true,
+      name: true,
+      displayId: true,
+      type: true,
+      environment: true,
+      status: true,
+      registeredAt: true,
+    },
   });
 
   await audit({
@@ -144,6 +163,7 @@ export async function POST(req: NextRequest) {
     metadata: {
       name: body.name,
       type: body.type,
+      environment: body.environment,
       // Token prefix for audit trail (full token never logged)
       tokenPrefix: secretToken.slice(0, 12),
     },
@@ -157,6 +177,7 @@ export async function POST(req: NextRequest) {
       id: agent.id,
       name: agent.name,
       type: agent.type,
+      environment: agent.environment,
       status: agent.status,
       createdAt: agent.registeredAt,
     },
@@ -164,7 +185,7 @@ export async function POST(req: NextRequest) {
     credentials: {
       agentId: agent.id,
       secretToken,
-      serverUrl: process.env.OPENSHIELD_PUBLIC_URL || "http://YOUR-SERVER:3001",
+      serverUrl: process.env.OPENSHIELD_PUBLIC_URL || process.env.OPENSHIELD_BASE_URL || "http://YOUR-SERVER:3001",
       setupHint:
         body.type === "BASH"
           ? "Save as agent_id + secret_token in /etc/openshield/agent.json"

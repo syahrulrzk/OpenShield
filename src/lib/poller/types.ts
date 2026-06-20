@@ -2,7 +2,7 @@
  * OpenShield — Poller types
  */
 
-export type SshEventInput = {
+export type ServerEventInput = {
   username: string;
   sourceIp: string;
   status: "SUCCESS" | "FAILED" | "INVALID";

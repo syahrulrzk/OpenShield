@@ -5,7 +5,7 @@
  * Body: { batchId?: string }  // optional — clear only specific batch
  *
  * Deletes assets where hostname starts with "mock-".
- * Cascades to ssh_events, db_events (via FK onDelete: Cascade),
+ * Cascades to server_events, db_events (via FK onDelete: Cascade),
  * and to alerts (via FK onDelete: SetNull → then explicit delete).
  *
  * OWASP A01:2021 — OWNER-only access (requireRole with OWNER)
@@ -45,7 +45,7 @@ export async function DELETE(req: NextRequest) {
     if (mockAssets.length === 0) {
       return NextResponse.json({
         ok: true,
-        deleted: { assets: 0, sshEvents: 0, dbEvents: 0, alerts: 0 },
+        deleted: { assets: 0, serverEvents: 0, dbEvents: 0, alerts: 0 },
         message: "No mock data found to clear",
       });
     }
@@ -60,8 +60,8 @@ export async function DELETE(req: NextRequest) {
     const assetIds = mockAssets.map((a) => a.id);
 
     // First, count alerts that will be deleted
-    const [sshEventsCount, dbEventsCount, alertsCount] = await Promise.all([
-      prisma.sshEvent.count({ where: { assetId: { in: assetIds } } }),
+    const [serverEventsCount, dbEventsCount, alertsCount] = await Promise.all([
+      prisma.serverEvent.count({ where: { assetId: { in: assetIds } } }),
       prisma.dbEvent.count({ where: { assetId: { in: assetIds } } }),
       // For alerts: in batched mode, count via JSON path on metadata.mockBatchId.
       // In "all mock" mode, count alerts that have a mockBatchId set (any value).
@@ -99,7 +99,7 @@ export async function DELETE(req: NextRequest) {
       `;
     }
 
-    // Delete assets (cascades to ssh_events, db_events, asset_credentials)
+    // Delete assets (cascades to server_events, db_events, asset_credentials)
     await prisma.asset.deleteMany({
       where: { id: { in: assetIds } },
     });
@@ -116,7 +116,7 @@ export async function DELETE(req: NextRequest) {
       batchId: batchId ?? null,
       deleted: {
         assets: assetIds.length,
-        sshEvents: sshEventsCount,
+        serverEvents: serverEventsCount,
         dbEvents: dbEventsCount,
         alerts: alertsCount,
       },

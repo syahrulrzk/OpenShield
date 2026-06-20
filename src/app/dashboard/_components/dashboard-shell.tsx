@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
-  Server,
   Cpu,
   Terminal,
   Bell,
@@ -22,10 +21,14 @@ import {
   BellRing,
   Radar,
   User,
+  ScrollText,
+  Eye,
+  FileLock,
 } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
 import { PulseDot } from "@/components/animations";
 import { NotificationsBell } from "./notifications-bell";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 type SubItem = {
   href: string;
@@ -42,6 +45,8 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
   requiresRole?: readonly ("OWNER" | "ADMIN")[];
   children?: SubItem[];
+  locked?: boolean;
+  badge?: string;
 };
 
 type NavGroup = {
@@ -66,19 +71,38 @@ const navGroups: NavGroup[] = [
         icon: Cpu,
         requiresRole: ["OWNER", "ADMIN"] as const,
       },
-      { href: "/dashboard/assets", label: "Assets", icon: Server },
       {
         href: "/dashboard/events",
-        label: "Events",
+        label: "Event Log",
         icon: Activity,
         children: [
-          // SSH login events submenu hidden by default — handled via SSH agent instead
-          { href: "/dashboard/events", label: "SSH", icon: Terminal, hidden: true },
-          { href: "/dashboard/events/database", label: "Database", icon: Database },
+          { href: "/dashboard/server", label: "Server", icon: Terminal },
+          { href: "/dashboard/database", label: "Database", icon: Database },
           {
-            href: "/dashboard/events/aplikasi",
-            label: "Aplikasi",
+            href: "/dashboard/apps",
+            label: "Apps",
             icon: AppWindow,
+            locked: true,
+            badge: "Soon",
+          },
+          {
+            href: "/dashboard/events/syslog",
+            label: "Syslog",
+            icon: ScrollText,
+            locked: true,
+            badge: "Soon",
+          },
+          {
+            href: "/dashboard/events/auditd",
+            label: "Auditd",
+            icon: Eye,
+            locked: true,
+            badge: "Soon",
+          },
+          {
+            href: "/dashboard/events/fim",
+            label: "FIM",
+            icon: FileLock,
             locked: true,
             badge: "Soon",
           },
@@ -125,6 +149,9 @@ export function DashboardShell({
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+
+  // Silent background JWT refresh — keeps user logged in indefinitely
+  useAutoRefresh();
 
   useEffect(() => {
     setMounted(true);
@@ -197,26 +224,7 @@ export function DashboardShell({
         <div className="absolute -bottom-32 -right-20 w-[260px] h-[260px] rounded-full bg-[var(--accent)]/[0.05] blur-[80px]" />
       </div>
 
-      {/* Brand header */}
-      <Link
-        href="/dashboard"
-        className="relative flex items-center gap-2.5 px-5 h-16 border-b border-[var(--border)] shrink-0 group"
-      >
-        <motion.div
-          whileHover={{ rotate: [0, -10, 10, 0] }}
-          transition={{ duration: 0.5 }}
-          className="h-8 w-8 rounded-lg bg-[var(--accent)] text-black flex items-center justify-center glow-emerald"
-        >
-          <ShieldCheck className="h-4.5 w-4.5" strokeWidth={2.5} />
-        </motion.div>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold tracking-tight">OpenShield</div>
-          <div className="text-[10px] text-[var(--muted-foreground)] tracking-wide uppercase flex items-center gap-1.5">
-            <PulseDot color="success" size="sm" />
-            Security Monitor
-          </div>
-        </div>
-      </Link>
+      {/* (Brand header moved to topbar — logo only, no text) */}
 
       {/* Nav groups */}
       <nav className="relative flex-1 overflow-y-auto px-3 py-4">
@@ -230,7 +238,11 @@ export function DashboardShell({
               {group.items.map((item) => {
                 const isActive = (() => {
                   if (item.children) {
-                    return pathname.startsWith(item.href);
+                    // Parent stays open when pathname matches any child OR the parent itself
+                    return (
+                      pathname.startsWith(item.href) ||
+                      item.children.some((sub) => pathname.startsWith(sub.href))
+                    );
                   }
                   return item.href === "/dashboard"
                     ? pathname === "/dashboard"
@@ -356,7 +368,7 @@ export function DashboardShell({
   );
 
   return (
-    <div className="min-h-screen flex bg-[var(--background)] text-[var(--foreground)] relative">
+    <div className="min-h-screen flex flex-col bg-[var(--background)] text-[var(--foreground)] relative">
       {/* Global dashboard background */}
       <div
         className="absolute inset-0 pointer-events-none opacity-30"
@@ -368,8 +380,91 @@ export function DashboardShell({
         }}
       />
 
-      {/* Desktop sidebar (md+) */}
-      <aside className="hidden md:flex md:flex-col w-60 shrink-0 sticky top-0 h-screen relative z-20">
+      {/* Topbar — full width across the top, same emerald style as sidebar.
+            overflow-visible so dropdowns (NotificationsBell, UserMenu) aren't clipped,
+            glows clipped via clip-path on the pattern container. */}
+      <header className="relative h-14 border-b border-[var(--border)] bg-[var(--background)] backdrop-blur-md sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 gap-3 shrink-0">
+        {/* Emerald grid pattern (same as sidebar) */}
+        <div
+          className="absolute inset-0 pointer-events-none opacity-60"
+          aria-hidden="true"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(16,185,129,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(16,185,129,0.06) 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+            clipPath: "inset(0)",
+          }}
+        />
+        {/* Radial glows (smaller scale for topbar, clipped to header bounds) */}
+        <div
+          className="absolute inset-0 pointer-events-none overflow-hidden"
+          aria-hidden="true"
+        >
+          <div className="absolute -top-20 -left-20 w-[180px] h-[140px] rounded-full bg-[var(--accent)]/[0.10] blur-[60px]" />
+          <div className="absolute -top-10 right-1/3 w-[200px] h-[120px] rounded-full bg-[var(--accent)]/[0.06] blur-[60px]" />
+        </div>
+        {/* Brand: logo only (left side) */}
+        <div className="relative z-10 flex items-center gap-3 min-w-0">
+          <motion.button
+            type="button"
+            onClick={() => setOpen(true)}
+            whileTap={{ scale: 0.92 }}
+            className="md:hidden h-9 w-9 -ml-1 rounded-lg hover:bg-white/[0.05] flex items-center justify-center text-[var(--muted)] hover:text-[var(--foreground)]"
+            aria-label="Open menu"
+          >
+            <Menu className="h-5 w-5" />
+          </motion.button>
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-2.5"
+            title="OpenShield"
+          >
+            {/* Logo: white + emerald accent, square aspect 219:240 (~0.91:1). */}
+            <div className="relative flex items-center justify-center shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo-openshield-v2.png"
+                alt="OpenShield"
+                className="object-contain block"
+                style={{ height: "36px", width: "36px" }}
+                onError={(e) => {
+                  // Fallback to icon if logo fails to load
+                  e.currentTarget.style.display = "none";
+                  e.currentTarget.parentElement?.classList.add("fallback");
+                }}
+              />
+            </div>
+            {/* Brand text — two-tone to match logo (Open white + Shield emerald) */}
+            <div className="flex items-baseline gap-0 min-w-0">
+              <span className="text-2xl font-bold tracking-tight whitespace-nowrap leading-none">
+                <span className="text-white">Open</span>
+                <span className="text-emerald-400">Shield</span>
+              </span>
+            </div>
+          </Link>
+        </div>
+
+        {/* Right: status + user (no email/role chip — kept cleaner). */}
+        {/* z-40 ensures dropdowns (NotificationsBell, UserMenu) sit above pattern/glow layers. */}
+        <div className="relative z-40 flex items-center gap-3 shrink-0">
+          {mounted && <NotificationsBell />}
+          <div className="hidden sm:flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-[var(--border)] bg-white/[0.02]">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent)] opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+            </span>
+            <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--accent)]">
+              Online
+            </span>
+          </div>
+          <UserMenu user={user} />
+        </div>
+      </header>
+
+      {/* Body row: sidebar + main content */}
+      <div className="flex-1 flex min-h-0 relative z-10">
+      {/* Desktop sidebar (md+) — height matches viewport minus topbar */}
+      <aside className="hidden md:flex md:flex-col w-60 shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] relative z-20 border-r border-[var(--border)]">
         {sidebarContent}
       </aside>
 
@@ -408,61 +503,10 @@ export function DashboardShell({
 
       {/* Main column */}
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
-        {/* Topbar */}
-        <header className="h-16 border-b border-[var(--border)] bg-[var(--background)]/80 backdrop-blur-md sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <motion.button
-              type="button"
-              onClick={() => setOpen(true)}
-              whileTap={{ scale: 0.92 }}
-              className="md:hidden h-9 w-9 -ml-1 rounded-lg hover:bg-white/[0.05] flex items-center justify-center text-[var(--muted)] hover:text-[var(--foreground)]"
-              aria-label="Open menu"
-            >
-              <Menu className="h-5 w-5" />
-            </motion.button>
-            <div className="md:hidden flex items-center gap-2 min-w-0">
-              <ShieldCheck
-                className="h-4 w-4 text-[var(--accent)] shrink-0"
-                strokeWidth={2.5}
-              />
-              <span className="text-sm font-semibold tracking-tight truncate">
-                OpenShield
-              </span>
-            </div>
-            <motion.div
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.1 }}
-              className="hidden md:flex items-center gap-2 text-xs text-[var(--muted-foreground)] font-mono"
-            >
-              <span className="text-[var(--foreground)]">{user.email}</span>
-              <span>·</span>
-              <motion.span
-                whileHover={{ scale: 1.05 }}
-                className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-[var(--border)]"
-              >
-                {user.role}
-              </motion.span>
-            </motion.div>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {mounted && <NotificationsBell />}
-            <div className="hidden sm:flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-[var(--border)] bg-white/[0.02]">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent)] opacity-75" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
-              </span>
-              <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--accent)]">
-                Online
-              </span>
-            </div>
-            <UserMenu user={user} />
-          </div>
-        </header>
-
         <main className="flex-1 overflow-auto">
           <div className="w-full p-4 sm:p-6 lg:p-8">{children}</div>
         </main>
+      </div>
       </div>
     </div>
   );

@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     };
     sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
 
-    const events = await prisma.sshEvent.findMany({
+    const events = await prisma.serverEvent.findMany({
       where: { asset: { userId: auth.userId }, eventTime: { gte: since } },
       orderBy: { eventTime: "desc" },
       include: { asset: { select: { hostname: true } } },

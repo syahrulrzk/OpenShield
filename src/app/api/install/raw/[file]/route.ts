@@ -5,14 +5,18 @@
  * No auth required — these are public read-only static agent binaries.
  * The actual auth is the agent_id+token in the installer's URL.
  *
- * Files are served from /app/agents/<type>/ inside the container.
+ * Files are served from $OPENSHIELD_AGENTS_DIR/<type>/ (default: /app/agents
+ * for Docker, ../../agents for dev mode relative to project root).
  */
 
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * agent.sh removed 2026-06-20 — bash agent deprecated (pipe_read hang).
+ * Only Python agent is supported now.
+ */
 const VALID_FILES = {
-  "agent.sh": { dir: "bash", contentType: "text/x-shellscript; charset=utf-8" },
   "agent.py": { dir: "python", contentType: "text/x-python; charset=utf-8" },
 } as const;
 
@@ -29,11 +33,15 @@ export async function GET(
     );
   }
 
-  const filePath = path.join("/app/agents", meta.dir, file);
+  // Resolve agent base dir: env override → /app/agents (Docker) → cwd/agents (dev)
+  const baseDir =
+    process.env.OPENSHIELD_AGENTS_DIR ||
+    (await pathExists("/app/agents") ? "/app/agents" : path.join(process.cwd(), "agents"));
+  const filePath = path.join(baseDir, meta.dir, file);
   try {
     await stat(filePath);
   } catch {
-    return Response.json({ error: "Agent source not found on server" }, { status: 404 });
+    return Response.json({ error: `Agent source not found: ${filePath}` }, { status: 404 });
   }
 
   // Stream the file (small — read into memory is fine)
@@ -48,4 +56,13 @@ export async function GET(
       "Cache-Control": "no-store",
     },
   });
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
 }

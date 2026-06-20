@@ -58,16 +58,15 @@ const ASSET_TEMPLATES = [
   { hostname: "stg-db-mssql",  category: "DATABASE" as const, environment: "STAGING" as const, os: "Windows Server 2022", dbType: "SQLSERVER" as const },
   { hostname: "uat-web-01",    category: "SSH" as const,      environment: "UAT" as const,     os: "Ubuntu 22.04" },
   { hostname: "uat-db-pg",     category: "DATABASE" as const, environment: "UAT" as const,     os: "Debian 12",    dbType: "POSTGRES" as const },
-  { hostname: "dev-sandbox",    category: "SSH" as const,      environment: "DEV" as const,     os: "Fedora 41" },
-  { hostname: "dr-bastion",    category: "SSH" as const,      environment: "DR" as const,      os: "Ubuntu 24.04" },
-  { hostname: "dr-db-pg",      category: "DATABASE" as const, environment: "DR" as const,      os: "Debian 12",    dbType: "POSTGRES" as const },
+  { hostname: "uat-batch-02",  category: "SSH" as const,      environment: "UAT" as const,     os: "Rocky Linux 9" },
+  { hostname: "stg-app-02",    category: "SSH" as const,      environment: "STAGING" as const, os: "Debian 12" },
   { hostname: "prod-jumpbox",  category: "SSH" as const,      environment: "PROD" as const,    os: "Rocky Linux 9" },
 ];
 
 const SCALE_CONFIG = {
-  small:  { sshEventsPerAsset: 30,  dbEventsPerAsset: 20, alertCount: 3 },
-  medium: { sshEventsPerAsset: 80,  dbEventsPerAsset: 50, alertCount: 6 },
-  large:  { sshEventsPerAsset: 200, dbEventsPerAsset: 120, alertCount: 10 },
+  small:  { serverEventsPerAsset: 30,  dbEventsPerAsset: 20, alertCount: 3 },
+  medium: { serverEventsPerAsset: 80,  dbEventsPerAsset: 50, alertCount: 6 },
+  large:  { serverEventsPerAsset: 200, dbEventsPerAsset: 120, alertCount: 10 },
 } as const;
 
 export async function POST(req: NextRequest) {
@@ -119,7 +118,7 @@ export async function POST(req: NextRequest) {
     const sshAssets = assets.filter((a) => a.category === "SSH");
     const dbAssets  = assets.filter((a) => a.category === "DATABASE");
 
-    const sshEventsData: Array<{
+    const serverEventsData: Array<{
       assetId: string;
       username: string;
       sourceIp: string;
@@ -132,7 +131,7 @@ export async function POST(req: NextRequest) {
     const now = Date.now();
     for (const asset of sshAssets) {
       // 75% success / 20% failed / 5% invalid
-      for (let i = 0; i < cfg.sshEventsPerAsset; i++) {
+      for (let i = 0; i < cfg.serverEventsPerAsset; i++) {
         const r = randomInt(100);
         const status: "SUCCESS" | "FAILED" | "INVALID" =
           r < 75 ? "SUCCESS" : r < 95 ? "FAILED" : "INVALID";
@@ -141,7 +140,7 @@ export async function POST(req: NextRequest) {
           status !== "SUCCESS" && randomInt(100) < 40
             ? SOURCE_IPS.slice(0, 4)[randomInt(4)] // attacker pool
             : SOURCE_IPS[randomInt(SOURCE_IPS.length)];
-        sshEventsData.push({
+        serverEventsData.push({
           assetId: asset.id,
           username: SSH_USERNAMES[randomInt(SSH_USERNAMES.length)],
           sourceIp: ip,
@@ -154,7 +153,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Bulk insert SSH events
-    await prisma.sshEvent.createMany({ data: sshEventsData });
+    await prisma.serverEvent.createMany({ data: serverEventsData });
 
     // 3. Generate DB events
     const dbEventsData: Array<{
@@ -239,7 +238,7 @@ export async function POST(req: NextRequest) {
         batchId,
         scale: body.scale,
         assets: assets.length,
-        sshEvents: sshEventsData.length,
+        serverEvents: serverEventsData.length,
         dbEvents: dbEventsData.length,
         alerts: alertsData.length,
       },
@@ -251,7 +250,7 @@ export async function POST(req: NextRequest) {
       scale: body.scale,
       created: {
         assets: assets.length,
-        sshEvents: sshEventsData.length,
+        serverEvents: serverEventsData.length,
         dbEvents: dbEventsData.length,
         alerts: alertsData.length,
       },

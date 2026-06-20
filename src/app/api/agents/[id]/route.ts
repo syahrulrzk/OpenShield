@@ -18,6 +18,12 @@ import { audit } from "@/lib/security/audit";
 const patchSchema = z.object({
   config: z.any().optional(),
   reactivate: z.boolean().optional(),
+  // Admin override: rewrite the agent's reported IP. Useful when an agent
+  // is stuck behind a NAT/proxy and reports its public IP instead of the
+  // LAN IP, or after a network migration. The agent will keep reporting
+  // its own detected IP on the next heartbeat (overwriting this) until it
+  // is restarted, so use this as a stop-gap or paired with a restart.
+  ip: z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, "must be a valid IPv4").optional(),
 });
 
 export async function DELETE(
@@ -122,6 +128,10 @@ export async function PATCH(
     data.revokedAt = null;
     data.lastError = null;
   }
+  if (body.ip !== undefined) {
+    data.ip = body.ip;
+    data.lastError = null; // clear stale error from old IP mismatch
+  }
 
   const updated = await prisma.agent.update({ where: { id }, data });
 
@@ -130,7 +140,7 @@ export async function PATCH(
     action: body.reactivate ? "agent.reactivated" : "agent.updated",
     resourceType: "agent",
     resourceId: id,
-    metadata: { fields: Object.keys(data) },
+    metadata: { fields: Object.keys(data), ipChanged: body.ip !== undefined },
   });
 
   return NextResponse.json({ ok: true, agent: updated });

@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# OpenShield custom
+/next
+/openshield@0.1.0
+/agents/python/__pycache__/
+/agents/python/*.py3
+*.bak-*
+/scripts/cleanup-test-assets.ts
+/scripts/list-users.ts
+/scripts/test-env-log.ts

@@ -17,43 +17,43 @@ datasource db {
 // ============================================================
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
   name         String?
-  role         UserRole @default(OWNER)
-  mfaSecret    String?  @map("mfa_secret") // TOTP, encrypted at rest
-  mfaEnabled   Boolean  @default(false) @map("mfa_enabled")
-  isActive     Boolean  @default(true) @map("is_active")
+  role         UserRole  @default(OWNER)
+  mfaSecret    String?   @map("mfa_secret") // TOTP, encrypted at rest
+  mfaEnabled   Boolean   @default(false) @map("mfa_enabled")
+  isActive     Boolean   @default(true) @map("is_active")
   lastLoginAt  DateTime? @map("last_login_at")
-  lastLoginIp  String?  @map("last_login_ip")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  lastLoginIp  String?   @map("last_login_ip")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  assets      Asset[]
+  assets        Asset[]
   refreshTokens RefreshToken[]
-  auditLogs   AuditLog[]
+  auditLogs     AuditLog[]
 
   @@index([email])
   @@map("users")
 }
 
 enum UserRole {
-  OWNER   // Full access, including user management
-  ADMIN   // Manage assets, alerts; view audit
-  VIEWER  // Read-only
+  OWNER // Full access, including user management
+  ADMIN // Manage assets, alerts; view audit
+  VIEWER // Read-only
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
-  tokenHash String   @unique @map("token_hash") // SHA-256 of raw token
-  expiresAt DateTime @map("expires_at")
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash") // SHA-256 of raw token
+  expiresAt DateTime  @map("expires_at")
   revokedAt DateTime? @map("revoked_at")
   usedAt    DateTime? @map("used_at") // For rotation: set when token is exchanged for a new one
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime  @default(now()) @map("created_at")
   ip        String?
-  userAgent String?  @map("user_agent")
+  userAgent String?   @map("user_agent")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -67,12 +67,12 @@ model RefreshToken {
 // ============================================================
 
 model Asset {
-  id           String     @id @default(cuid())
-  userId       String     @map("user_id")
+  id          String        @id @default(cuid())
+  userId      String        @map("user_id")
   // Top-level category: SSH | DATABASE | APP (apps = upcoming)
-  category     AssetCategory @default(SSH) @map("category")
+  category    AssetCategory @default(SSH) @map("category")
   // Deployment environment (PROD/STAGING/UAT/DEV/DR)
-  environment  Environment @default(PROD) @map("environment")
+  environment Environment   @default(PROD) @map("environment")
 
   // ===== IDENTITAS SERVER (biar gampang manage banyak server) =====
   // displayName: alias manusiawi, mis. "prod-web-jkt-01"
@@ -80,48 +80,48 @@ model Asset {
   //   - Kalau kosong, fallback ke hostname saat read
   //   - Format rekomendasi: <env>-<role>-<location>-<num>
   //     contoh: prod-web-jkt-01, staging-db-sg-02, dr-bastion-jkt-01
-  displayName  String?    @map("display_name")
+  displayName String? @map("display_name")
   // role: fungsi server (web/db/app/cache/lb/bastion/monitoring/logging/etc)
-  role         String?
+  role        String?
   // location: datacenter / cloud region (jkt/sg/aws-ap-southeast/gcp-asia/etc)
-  location     String?
+  location    String?
   // tags: JSON array of labels, mis. ["nginx","payment","tier-1","critical"]
-  tags         Json?      @map("tags")
+  tags        Json?   @map("tags")
   // description: notes bebas (purpose, owner, runbook link, dll)
-  description  String?    @db.Text
+  description String? @db.Text
 
-  hostname     String
-  publicIp     String?    @map("public_ip")
-  privateIp    String?    @map("private_ip")
-  os           String?    // e.g. "Ubuntu 24.04", "Debian 12"
-  kernel       String?    // e.g. "6.8.0-124-generic"
-  sshPort      Int        @default(22) @map("ssh_port")
-  sshUser      String?    @map("ssh_user")
+  hostname  String
+  publicIp  String? @map("public_ip")
+  privateIp String? @map("private_ip")
+  os        String? // e.g. "Ubuntu 24.04", "Debian 12"
+  kernel    String? // e.g. "6.8.0-124-generic"
+  sshPort   Int     @default(22) @map("ssh_port")
+  sshUser   String? @map("ssh_user")
 
   // Database sub-type (only filled when category = DATABASE)
-  dbType       DbType     @default(NONE) @map("db_type")
-  dbHost       String?    @map("db_host")
-  dbPort       Int?       @map("db_port")
-  dbName       String?    @map("db_name")
-  dbUser       String?    @map("db_user")
+  dbType DbType  @default(NONE) @map("db_type")
+  dbHost String? @map("db_host")
+  dbPort Int?    @map("db_port")
+  dbName String? @map("db_name")
+  dbUser String? @map("db_user")
 
-  status       AssetStatus @default(PENDING)
-  lastSeenAt   DateTime?  @map("last_seen_at")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
+  status     AssetStatus @default(PENDING)
+  lastSeenAt DateTime?   @map("last_seen_at")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
 
   // Poller state — tracks incremental auth.log position + last run status
   // pollerCursor: byte offset in /var/log/auth.log (or log-specific cursor)
-  pollerCursor   String?   @map("poller_cursor")
-  pollerStatus   PollerStatus @default(IDLE) @map("poller_status")
-  pollerError    String?   @map("poller_error")
-  lastPolledAt   DateTime? @map("last_polled_at")
-  pollCount      Int       @default(0) @map("poll_count")
+  pollerCursor String?      @map("poller_cursor")
+  pollerStatus PollerStatus @default(IDLE) @map("poller_status")
+  pollerError  String?      @map("poller_error")
+  lastPolledAt DateTime?    @map("last_polled_at")
+  pollCount    Int          @default(0) @map("poll_count")
 
-  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   sshCredentials AssetCredential? @relation("SshCred")
   dbCredentials  AssetCredential? @relation("DbCred")
-  sshEvents      SshEvent[]
+  serverEvents   ServerEvent[]
   dbEvents       DbEvent[]
   alerts         Alert[]
 
@@ -138,31 +138,29 @@ model Asset {
 }
 
 enum AssetCategory {
-  SSH       // SSH login monitoring
-  DATABASE  // Database login monitoring (Postgres/MySQL/SQLServer)
-  APP       // Application access monitoring (upcoming)
+  SSH // SSH login monitoring
+  DATABASE // Database login monitoring (Postgres/MySQL/SQLServer)
+  APP // Application access monitoring (upcoming)
 }
 
 enum Environment {
-  PROD     // Production (live customer-facing)
-  STAGING  // Pre-production mirror
-  UAT      // User Acceptance Testing
-  DEV      // Development
-  DR       // Disaster Recovery
+  PROD // Production (live customer-facing)
+  STAGING // Pre-production mirror
+  UAT // User Acceptance Testing
 }
 
 enum AssetStatus {
-  PENDING  // Just added, not yet polled
-  ONLINE   // Last poll < 2 min ago
-  OFFLINE  // Last poll > 5 min ago
-  ERROR    // Last poll failed
+  PENDING // Just added, not yet polled
+  ONLINE // Last poll < 2 min ago
+  OFFLINE // Last poll > 5 min ago
+  ERROR // Last poll failed
 }
 
 enum PollerStatus {
-  IDLE     // Not currently polling
-  POLLING  // Poll in progress
-  OK       // Last poll succeeded
-  ERROR    // Last poll failed (see pollerError)
+  IDLE // Not currently polling
+  POLLING // Poll in progress
+  OK // Last poll succeeded
+  ERROR // Last poll failed (see pollerError)
 }
 
 enum DbType {
@@ -180,18 +178,18 @@ enum DbType {
 // the Prisma 6 + Postgres constraint-rename bug that previously forced a
 // destructive --force-reset during schema pushes.
 model AssetCredential {
-  id             String   @id @default(cuid())
+  id         String   @id @default(cuid())
   // Two nullable FK slots, each UNIQUE so at most one AssetCredential
   // can be attached to a given Asset on each side.
-  sshAssetId     String?  @unique @map("ssh_asset_id")
-  dbAssetId      String?  @unique @map("db_asset_id")
+  sshAssetId String?  @unique @map("ssh_asset_id")
+  dbAssetId  String?  @unique @map("db_asset_id")
   // Encrypted blob: iv (12B) + ciphertext + authTag (16B), base64 encoded
-  sshEncData     String?  @map("ssh_enc_data")
-  dbEncData      String?  @map("db_enc_data")
+  sshEncData String?  @map("ssh_enc_data")
+  dbEncData  String?  @map("db_enc_data")
   // Key version for rotation support
-  keyVersion     Int      @default(1) @map("key_version")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  keyVersion Int      @default(1) @map("key_version")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
   sshAsset Asset? @relation("SshCred", fields: [sshAssetId], references: [id], onDelete: Cascade)
   dbAsset  Asset? @relation("DbCred", fields: [dbAssetId], references: [id], onDelete: Cascade)
@@ -203,34 +201,34 @@ model AssetCredential {
 // SSH EVENTS (login success/failed)
 // ============================================================
 
-model SshEvent {
-  id        String   @id @default(cuid())
-  assetId   String   @map("asset_id")
-  username  String   // user trying to log in
-  sourceIp  String   @map("source_ip")
-  status    SshStatus
-  method    String?  // e.g. "publickey", "password"
-  country   String?  // GeoIP later
-  eventTime DateTime @map("event_time")
-  raw       String?  // raw log line (for audit)
+model ServerEvent {
+  id        String       @id @default(cuid())
+  assetId   String       @map("asset_id")
+  username  String // user trying to log in
+  sourceIp  String       @map("source_ip")
+  status    ServerStatus
+  method    String? // e.g. "publickey", "password"
+  country   String? // GeoIP later
+  eventTime DateTime     @map("event_time")
+  raw       String? // raw log line (for audit)
   // Aggregation: identical events within the dedup window are merged
   // into a single row with count incremented (prevents spam from
   // cronjobs/automated SSH that log every minute).
-  count     Int      @default(1)
-  createdAt DateTime @default(now()) @map("created_at")
+  count     Int          @default(1)
+  createdAt DateTime     @default(now()) @map("created_at")
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   @@index([assetId, eventTime])
   @@index([sourceIp, eventTime])
   @@index([status, eventTime])
-  @@map("ssh_events")
+  @@map("server_events")
 }
 
-enum SshStatus {
+enum ServerStatus {
   SUCCESS
   FAILED
-  INVALID  // invalid user
+  INVALID // invalid user
 }
 
 // ============================================================
@@ -239,18 +237,18 @@ enum SshStatus {
 // ============================================================
 
 model DbEvent {
-  id          String      @id @default(cuid())
-  assetId     String      @map("asset_id")
-  dbType      DbType      @map("db_type") // POSTGRES | MYSQL | SQLSERVER
-  username    String      // db user
-  sourceIp    String?     @map("source_ip")
-  database    String?     // db name (or default db)
-  status      DbEventStatus
-  eventTime   DateTime    @map("event_time")
-  raw         String?     // raw log line
-  // Aggregation: same idea as SshEvent — duplicate events merged
-  count       Int         @default(1)
-  createdAt   DateTime    @default(now()) @map("created_at")
+  id        String        @id @default(cuid())
+  assetId   String        @map("asset_id")
+  dbType    DbType        @map("db_type") // POSTGRES | MYSQL | SQLSERVER
+  username  String // db user
+  sourceIp  String?       @map("source_ip")
+  database  String? // db name (or default db)
+  status    DbEventStatus
+  eventTime DateTime      @map("event_time")
+  raw       String? // raw log line
+  // Aggregation: same idea as ServerEvent — duplicate events merged
+  count     Int           @default(1)
+  createdAt DateTime      @default(now()) @map("created_at")
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
@@ -263,9 +261,9 @@ model DbEvent {
 }
 
 enum DbEventStatus {
-  SUCCESS   // login OK
-  FAILED    // auth failed
-  DENIED    // access denied (e.g. pg_hba.conf reject)
+  SUCCESS // login OK
+  FAILED // auth failed
+  DENIED // access denied (e.g. pg_hba.conf reject)
 }
 
 // ============================================================
@@ -273,16 +271,16 @@ enum DbEventStatus {
 // ============================================================
 
 model Alert {
-  id          String      @id @default(cuid())
-  assetId     String?     @map("asset_id")
+  id          String        @id @default(cuid())
+  assetId     String?       @map("asset_id")
   severity    AlertSeverity
   title       String
-  description String      @db.Text
-  metadata    Json?       // { sourceIp, eventCount, window, etc. }
-  status      AlertStatus @default(OPEN)
-  resolvedAt  DateTime?   @map("resolved_at")
-  resolvedBy  String?     @map("resolved_by")
-  createdAt   DateTime    @default(now()) @map("created_at")
+  description String        @db.Text
+  metadata    Json? // { sourceIp, eventCount, window, etc. }
+  status      AlertStatus   @default(OPEN)
+  resolvedAt  DateTime?     @map("resolved_at")
+  resolvedBy  String?       @map("resolved_by")
+  createdAt   DateTime      @default(now()) @map("created_at")
 
   asset Asset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
 
@@ -311,7 +309,7 @@ enum AlertStatus {
 model AuditLog {
   id           String   @id @default(cuid())
   userId       String?  @map("user_id")
-  action       String   // e.g. "auth.login.success", "asset.create", "credential.view"
+  action       String // e.g. "auth.login.success", "asset.create", "credential.view"
   resourceType String?  @map("resource_type") // e.g. "asset", "user"
   resourceId   String?  @map("resource_id")
   ip           String?
@@ -319,7 +317,7 @@ model AuditLog {
   metadata     Json?
   // Hash chain
   prevHash     String?  @map("prev_hash") // hex SHA-256 of previous row
-  hash         String   // hex SHA-256 of (prevHash + row content)
+  hash         String // hex SHA-256 of (prevHash + row content)
   createdAt    DateTime @default(now()) @map("created_at")
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -336,7 +334,7 @@ model AuditLog {
 
 model SystemSetting {
   key       String   @id
-  value     String   // JSON-encoded value
+  value     String // JSON-encoded value
   updatedBy String?  @map("updated_by")
   updatedAt DateTime @updatedAt @map("updated_at")
   createdAt DateTime @default(now()) @map("created_at")
@@ -354,6 +352,11 @@ model Agent {
   id            String      @id @default(cuid())
   // Human-readable alias, e.g. "prod-web-jkt-01-agent"
   name          String
+  // Short display ID, e.g. "OP-01", "OP-02" — sequential, easy to reference.
+  // NULL-able so existing agents can coexist; assigned by server via
+  // scripts/migrate-agent-display-id.ts and src/lib/agent-display-id.ts.
+  // Cuid (id) remains the canonical auth identity.
+  displayId     String?     @unique @map("display_id")
   // hostname + ip are reported by the agent on first heartbeat.
   // For admin-initiated flow (POST /api/agents) they're null until
   // the agent comes online and reports its identity.
@@ -361,9 +364,15 @@ model Agent {
   ip            String?
   // Agent implementation
   type          AgentType
+  // Self-reported agent version (from agent.py VERSION constant).
+  // Compared against AGENT_COMPAT_MIN (src/lib/agent-versions.ts)
+  // on every heartbeat to detect outdated agents.
   version       String      @default("1.0.0") // agent-reported version
-  os            String?     // e.g. "Ubuntu 24.04"
-  kernel        String?     // e.g. "6.8.0-124-generic"
+  os            String? // e.g. "Ubuntu 24.04"
+  kernel        String? // e.g. "6.8.0-124-generic"
+  // Deployment environment — helps group/filter agents in UI
+  // (e.g. list all prod agents, alert on staging breach, etc.)
+  environment   Environment @default(PROD) @map("environment")
   // Lifecycle
   status        AgentStatus @default(REGISTERED)
   lastHeartbeat DateTime?   @map("last_heartbeat")
@@ -383,7 +392,7 @@ model Agent {
   // Stats
   eventsSent    Int         @default(0) @map("events_sent")
 
-  events        AgentEvent[]
+  events AgentEvent[]
 
   // Removed: @@unique([hostname, type]) — incompatible with admin-initiated
   // flow where multiple agents can run on the same host (each with own agentId).
@@ -395,20 +404,20 @@ model Agent {
 }
 
 enum AgentType {
-  BASH    // agent.sh — zero deps, log file watching
-  PYTHON  // agent.py — full features, FIM, process monitor
+  BASH // agent.sh — zero deps, log file watching
+  PYTHON // agent.py — full features, FIM, process monitor
 }
 
 enum AgentStatus {
-  REGISTERED  // created but no heartbeat yet
-  ONLINE      // last heartbeat < 2 min ago
-  STALE       // last heartbeat 2-10 min ago
-  OFFLINE     // last heartbeat > 10 min ago
-  ERROR       // last heartbeat returned error
-  REVOKED     // admin disabled this agent
+  REGISTERED // created but no heartbeat yet
+  ONLINE // last heartbeat < 2 min ago
+  STALE // last heartbeat 2-10 min ago
+  OFFLINE // last heartbeat > 10 min ago
+  ERROR // last heartbeat returned error
+  REVOKED // admin disabled this agent
 }
 
-// Events sent by agents. Different shape than SshEvent/DbEvent
+// Events sent by agents. Different shape than ServerEvent/DbEvent
 // (which are server-side captured). AgentEvent covers:
 //   - log.line    : parsed line from a watched log file
 //   - file.change : file integrity hash mismatch
@@ -416,16 +425,16 @@ enum AgentStatus {
 //   - metric.system : CPU/RAM/disk/network sample
 //   - custom      : user-defined plugin output
 model AgentEvent {
-  id         String   @id @default(cuid())
-  agentId    String   @map("agent_id")
-  eventType  String   // see comment above
-  severity   String   @default("INFO") // INFO | WARN | ERROR | CRITICAL
-  source     String   // file path, process name, or metric identifier
-  message    String   // human-readable summary
-  rawData    Json?    @map("raw_data") // structured details (parsed fields)
-  eventTime  DateTime @map("event_time")
-  count      Int      @default(1) // same dedup-with-aggregation idea
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(cuid())
+  agentId   String   @map("agent_id")
+  eventType String // see comment above
+  severity  String   @default("INFO") // INFO | WARN | ERROR | CRITICAL
+  source    String // file path, process name, or metric identifier
+  message   String // human-readable summary
+  rawData   Json?    @map("raw_data") // structured details (parsed fields)
+  eventTime DateTime @map("event_time")
+  count     Int      @default(1) // same dedup-with-aggregation idea
+  createdAt DateTime @default(now()) @map("created_at")
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

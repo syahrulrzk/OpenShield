@@ -42,6 +42,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -143,37 +144,158 @@ def sign_body(secret: str, body: str) -> str:
 
 
 # ─── Detection helpers ─────────────────────────────────────
-def detect_host_info(log: logging.Logger) -> Dict[str, str]:
-    hostname = socket.gethostname()
-    try:
-        ip = (
-            subprocess.check_output(
-                ["curl", "-s", "-4", "--max-time", "3", "https://api.ipify.org"],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-        )
-        if not ip:
-            raise RuntimeError("no public IP")
-    except Exception:
-        # Fallback to local interface
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(2)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            ip = "0.0.0.0"
+# Prefixes we should *never* report as the agent IP. These are virtual
+# interfaces, tunnels, or special-purpose addresses that misrepresent
+# the host when listed on a monitoring dashboard.
+_BAD_IFACE_PREFIXES = (
+    "docker",    # docker bridge (172.17.0.1, 172.18.0.1, …)
+    "br-",       # docker custom bridges (br-cc87cce1d5cd, …)
+    "veth",      # virtual ethernet pair (one per container)
+    "virbr",     # libvirt default bridge (192.168.122.1)
+    "tun",       # generic L3 tunnel
+    "tap",       # generic L2 tunnel
+    "tailscale", # userspace WireGuard — not the host's primary IP
+    "wg",        # WireGuard interface
+    "zt",        # ZeroTier
+    "lo",        # loopback
+)
+_BAD_IP_PREFIXES = (
+    "127.",          # loopback
+    "169.254.",      # link-local (APIPA)
+    "0.0.0.0",       # invalid
+    "192.168.122.",  # libvirt default bridge (virbr0)
+)
 
-    os_desc = " ".join(
-        x for x in (
-            subprocess.getoutput("uname -s").strip(),
-            subprocess.getoutput("uname -r").strip(),
-            subprocess.getoutput("uname -m").strip(),
-        ) if x
-    )
+
+def _pick_linux_default_ip() -> str | None:
+    """
+    Best-effort detection of the host's *internal* IPv4 address.
+
+    Strategy:
+      1. `ip route get 1.1.1.1` — Linux route table knows which source
+         IP the kernel would use to reach the internet. This is the
+         most accurate answer on a multi-homed host (Tailscale +
+         Docker + LAN at the same time), because it is the same
+         decision the kernel makes for outbound traffic.
+      2. Pick the first non-virtual, non-loopback, non-link-local
+         address from `hostname -I`.
+      3. Last-resort UDP "connect" trick — opens a socket to 8.8.8.8
+         without sending any packets, then reads the source IP from
+         getsockname(). This used to be the fallback before; we keep
+         it as a final safety net.
+
+    Returns None if nothing usable was found.
+    """
+    # ── 1. ip route get 1.1.1.1 ──────────────────────────────────
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "route", "get", "1.1.1.1"],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode().strip()
+        # Line looks like:  "1.1.1.1 via 10.0.0.1 dev ens160 src 172.16.19.235 uid 0"
+        # Find the literal "src" token, then take the *next* token as the IP.
+        # (Earlier we tried `token.startswith("src")` which also matched the
+        # bare "src" word itself and returned an empty string.)
+        tokens = out.split()
+        for i, token in enumerate(tokens):
+            if token == "src" and i + 1 < len(tokens):
+                candidate = tokens[i + 1].strip()
+                if candidate and not candidate.startswith(_BAD_IP_PREFIXES):
+                    return candidate
+    except Exception:
+        pass
+
+    # ── 2. hostname -I, filtering virtual interfaces ─────────────
+    try:
+        out = subprocess.check_output(
+            ["hostname", "-I"], stderr=subprocess.DEVNULL, timeout=2
+        ).decode().strip()
+        for candidate in out.split():
+            if candidate and not candidate.startswith(_BAD_IP_PREFIXES):
+                # `hostname -I` includes *all* addresses, including
+                # docker/tailscale. Cross-check against the interface
+                # list to drop virtual ones.
+                try:
+                    link_out = subprocess.check_output(
+                        ["ip", "-4", "-o", "addr", "show"], stderr=subprocess.DEVNULL, timeout=2
+                    ).decode()
+                    for line in link_out.splitlines():
+                        # "ens160    inet 172.16.19.235/16 brd …"
+                        parts = line.split()
+                        if len(parts) >= 4 and parts[2] == "inet":
+                            ifname = parts[1]
+                            addr_with_mask = parts[3]
+                            addr = addr_with_mask.split("/")[0]
+                            if addr == candidate and not ifname.startswith(_BAD_IFACE_PREFIXES):
+                                return candidate
+                except Exception:
+                    return candidate  # best guess if we can't read the interface table
+    except Exception:
+        pass
+
+    # ── 3. UDP socket trick (legacy fallback) ─────────────────────
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith(_BAD_IP_PREFIXES):
+            return ip
+    except Exception:
+        pass
+
+    return None
+
+
+def detect_host_info(log: logging.Logger) -> Dict[str, str]:
+    """
+    Detect basic host metadata for the agent registration payload.
+
+    IMPORTANT: `ip` is the *internal* IPv4 address of the host, NOT the
+    public IP. We previously fetched this from api.ipify.org which
+    returned the NAT egress IP — useless for a monitoring dashboard
+    that wants to know "where do I find this host on my network".
+    See _pick_linux_default_ip() for the full selection strategy.
+    """
+    hostname = socket.gethostname()
+    ip = _pick_linux_default_ip() or "0.0.0.0"
+    if ip == "0.0.0.0":
+        log.warning("could not detect a usable internal IPv4 address; reporting 0.0.0.0")
+
+    # Prefer distro name from /etc/os-release (e.g. "Ubuntu 24.04 LTS",
+    # "Debian GNU/Linux 12"). Fall back to uname if not present.
+    os_desc = ""
+    try:
+        with open("/etc/os-release") as f:
+            data = dict(
+                line.strip().split("=", 1)
+                for line in f
+                if "=" in line and not line.strip().startswith("#")
+            )
+        pretty = data.get("PRETTY_NAME", "").strip().strip('"')
+        version = data.get("VERSION_ID", "").strip().strip('"')
+        if pretty:
+            os_desc = pretty
+        elif data.get("NAME"):
+            os_desc = data["NAME"].strip().strip('"')
+            if version:
+                os_desc += " " + version
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    if not os_desc:
+        os_desc = " ".join(
+            x for x in (
+                subprocess.getoutput("uname -s").strip(),
+                subprocess.getoutput("uname -r").strip(),
+                subprocess.getoutput("uname -m").strip(),
+            ) if x
+        )
+
     kernel = subprocess.getoutput("uname -r").strip()
 
     return {
@@ -213,6 +335,382 @@ def hash_file(path: str) -> Optional[str]:
         return h.hexdigest()
     except (OSError, PermissionError):
         return None
+
+
+# ─── Log Tailer ──────────────────────────────────────
+class SshdParser:
+    """
+    Parse sshd log lines (auth.log on Ubuntu/Debian, /var/log/secure on RHEL).
+
+    Emits 'log.line' events with severity:
+      - ERROR:   failed authentications, invalid users, disconnects
+      - INFO:    successful sessions, session opens/closes
+      - WARN:    protocol errors, malformed input
+    """
+
+    # "Failed password for invalid user testuser from 10.0.0.5 port 51234 ssh2"
+    # "Failed password for gm from 10.0.0.5 port 51234 ssh2"
+    RE_FAILED_PASSWORD = re.compile(
+        r"Failed password for (?:invalid user )?(\S+) from ([\d.]+) port (\d+) ssh2"
+    )
+    # "Invalid user testuser from 10.0.0.5"
+    RE_INVALID_USER = re.compile(
+        r"Invalid user (\S+) from ([\d.]+)"
+    )
+    # "Accepted password for gm from 10.0.0.5 port 51234 ssh2"
+    RE_ACCEPTED_PASSWORD = re.compile(
+        r"Accepted (?:password|publickey) for (\S+) from ([\d.]+) port (\d+) ssh2"
+    )
+    # "Did not receive identification string from 10.0.0.5"
+    RE_NO_IDENT = re.compile(
+        r"Did not receive identification string from ([\d.]+)"
+    )
+    # "Connection closed by authenticating user testuser 10.0.0.5 port 51234 [preauth]"
+    RE_CONN_CLOSED = re.compile(
+        r"Connection closed by (?:authenticating user )?(\S+)?\s*([\d.]+)?\s*port (\d+)"
+    )
+    # "error: maximum authentication attempts exceeded for gm from 10.0.0.5 port 51234 ssh2"
+    RE_MAX_AUTH = re.compile(
+        r"maximum authentication attempts exceeded for (\S+) from ([\d.]+) port (\d+)"
+    )
+    # "Starting session: subsystem 'sftp' for linux from 10.1.1.100 port 52657 id 0"
+    RE_SFTP_SESSION = re.compile(
+        r"Starting session: subsystem 'sftp' for (\S+) from ([\d.]+) port (\d+)"
+    )
+    # "Starting session: subsystem 'internal-sftp' for rizki from 1.2.3.4 port 22 id 0"
+    RE_SFTP_SUBSYS = re.compile(
+        r"Starting session: subsystem 'internal-sftp' for (\S+) from ([\d.]+) port (\d+)"
+    )
+    # "Starting session: subsystem 'scp' for rizki from 1.2.3.4 port 22 id 0"
+    RE_SCP_SESSION = re.compile(
+        r"Starting session: subsystem 'scp' for (\S+) from ([\d.]+) port (\d+)"
+    )
+
+    def parse(self, line: str) -> Optional[Dict[str, Any]]:
+        """Return event dict or None if line doesn't match sshd patterns."""
+        # Strip timestamp + hostname prefix (everything up to first ': ' AFTER hostname)
+        # auth.log format: "2026-06-20T18:00:00.000Z hostname sshd[pid]: ..."
+        m = self.RE_FAILED_PASSWORD.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "ERROR",
+                "source": "/var/log/auth.log",
+                "message": f"SSH login failed: user={user}, ip={ip}, port={port}",
+                "raw_data": {
+                    "event": "sshd.failed_password",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_INVALID_USER.search(line)
+        if m:
+            user, ip = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "WARN",
+                "source": "/var/log/auth.log",
+                "message": f"SSH invalid user: {user} from {ip}",
+                "raw_data": {
+                    "event": "sshd.invalid_user",
+                    "user": user,
+                    "ip": ip,
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_ACCEPTED_PASSWORD.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SSH login success: user={user}, ip={ip}, port={port}",
+                "raw_data": {
+                    "event": "sshd.accepted",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_MAX_AUTH.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "ERROR",
+                "source": "/var/log/auth.log",
+                "message": f"SSH max auth attempts exceeded: user={user}, ip={ip}",
+                "raw_data": {
+                    "event": "sshd.max_auth",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_NO_IDENT.search(line)
+        if m:
+            ip = m.group(1)
+            return {
+                "event_type": "log.line",
+                "severity": "WARN",
+                "source": "/var/log/auth.log",
+                "message": f"SSH no identification string from {ip}",
+                "raw_data": {
+                    "event": "sshd.no_ident",
+                    "ip": ip,
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_CONN_CLOSED.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SSH connection closed: user={user or '?'}, ip={ip or '?'}, port={port}",
+                "raw_data": {
+                    "event": "sshd.conn_closed",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port) if port else None,
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_SFTP_SESSION.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SFTP session opened: user={user}, ip={ip}, port={port}",
+                "raw_data": {
+                    "event": "sshd.sftp_session",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "service": "SFTP",
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_SFTP_SUBSYS.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SFTP session opened (internal-sftp): user={user}, ip={ip}, port={port}",
+                "raw_data": {
+                    "event": "sshd.sftp_session",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "service": "SFTP",
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_SCP_SESSION.search(line)
+        if m:
+            user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SCP session opened: user={user}, ip={ip}, port={port}",
+                "raw_data": {
+                    "event": "sshd.scp_session",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "service": "SCP",
+                    "parser": "sshd",
+                },
+            }
+        return None
+
+
+class SyslogParser:
+    """
+    Stub parser for syslog — emits all lines as INFO by default.
+    Syslog is too noisy (kernel/dhclient/cron), so we recommend
+    keeping it disabled in agent.yaml. Add filters here if needed.
+    """
+
+    def parse(self, line: str) -> Optional[Dict[str, Any]]:
+        return None  # disabled by default; see audit notes
+
+
+PARSERS: Dict[str, Any] = {
+    "sshd": SshdParser,
+    "syslog": SyslogParser,
+}
+
+
+class LogTailer:
+    """
+    Tails log files from a watchlist, emits parsed events for new lines.
+
+    Config format (agent.yaml):
+      log_watchers:
+        - path: /var/log/auth.log
+          parser: sshd
+        - path: /var/log/secure
+          parser: sshd
+
+    State (per-file):
+      - offset: bytes already read (saved to log_offsets.json)
+      - inode: file identity (so we can detect log rotation/truncation)
+
+    Truncation handling: if file size < saved offset OR inode changes,
+    we reset offset to 0 (start from beginning of new file). For
+    rotation-without-rename (e.g., copytruncate), this means we may
+    re-emit some lines, but the server-side dedup (5-min window)
+    keeps the dashboard clean.
+
+    Crash safety: offsets saved to log_offsets.json after each successful
+    tick. Atomic write via temp file + rename.
+    """
+
+    MAX_LINE_BYTES = 8192  # skip absurdly long lines (binary garbage etc.)
+    MAX_LINES_PER_TICK = 500  # cap to avoid memory blow-up
+
+    def __init__(self, watchers: List[Dict[str, str]], state_dir: str, log: logging.Logger):
+        self.log = log
+        self.state_dir = state_dir
+        self.offsets_path = os.path.join(state_dir, "log_offsets.json")
+        self.offsets: Dict[str, int] = {}
+        self.inodes: Dict[str, int] = {}
+        # Build list of (path, parser_instance) — skip unknown parsers
+        self.targets: List[Tuple[str, Any]] = []
+        for w in watchers or []:
+            path = w.get("path")
+            parser_name = w.get("parser", "sshd")
+            if not path:
+                continue
+            if parser_name not in PARSERS:
+                self.log.warning(f"Unknown parser '{parser_name}' for {path}, skipping")
+                continue
+            self.targets.append((path, PARSERS[parser_name]()))
+        self._load_state()
+
+    def _load_state(self) -> None:
+        try:
+            with open(self.offsets_path) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                # Backwards-compat: old format was {"path": offset}
+                # New format: {"offsets": {...}, "inodes": {...}}
+                if "offsets" in data:
+                    self.offsets = {k: int(v) for k, v in data["offsets"].items()}
+                    self.inodes = {k: int(v) for k, v in data.get("inodes", {}).items()}
+                else:
+                    self.offsets = {k: int(v) for k, v in data.items()}
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            self.log.debug(f"No prior log_offsets state ({type(e).__name__})")
+        self.log.info(
+            f"LogTailer: watching {len(self.targets)} file(s) "
+            f"(existing offsets: {len(self.offsets)})"
+        )
+        for path, _ in self.targets:
+            off = self.offsets.get(path, 0)
+            ino = self.inodes.get(path, 0)
+            parser_name = "?"
+            for w in (self.targets or []):
+                if w[0] == path:
+                    pass
+            self.log.info(f"  \u2022 {path} (offset={off}, inode={ino})")
+
+    def _save_state(self) -> None:
+        """Atomic write: temp file + rename, so a crash mid-write doesn't corrupt state."""
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            tmp = self.offsets_path + ".tmp"
+            payload = {"offsets": self.offsets, "inodes": self.inodes}
+            with open(tmp, "w") as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp, self.offsets_path)
+            os.chmod(self.offsets_path, 0o600)
+        except Exception as e:
+            self.log.warning(f"log_offsets save failed: {e}")
+
+    def tick(self) -> List[Dict[str, Any]]:
+        """
+        Read new lines from each watched file, parse, return events.
+        Should be called once per main-loop iteration (e.g., every 30s).
+        """
+        events: List[Dict[str, Any]] = []
+        for path, parser in self.targets:
+            if not os.path.exists(path):
+                # File doesn't exist (e.g., /var/log/secure on Ubuntu) — silently skip
+                self.log.debug(f"Skip {path} (does not exist)")
+                continue
+            try:
+                st = os.stat(path)
+            except OSError as e:
+                self.log.debug(f"Skip {path} (stat failed: {e})")
+                continue
+            inode = st.st_ino
+            size = st.st_size
+            offset = self.offsets.get(path, 0)
+            prev_inode = self.inodes.get(path, 0)
+
+            # Detect truncation/rotation
+            if size < offset or (prev_inode and inode != prev_inode):
+                self.log.info(
+                    f"{path}: rotation/truncation detected "
+                    f"(size={size} < offset={offset} or inode changed). Resetting to 0."
+                )
+                offset = 0
+
+            if size == offset:
+                # Nothing new
+                self.inodes[path] = inode
+                continue
+
+            # Read new content
+            try:
+                with open(path, "r", errors="replace") as f:
+                    f.seek(offset)
+                    raw = f.read(size - offset)
+            except OSError as e:
+                self.log.warning(f"{path}: read failed: {e}")
+                continue
+
+            lines = raw.splitlines()
+            new_offset = offset + len(raw.encode("utf-8", errors="replace"))
+            parsed_count = 0
+            for line in lines[: self.MAX_LINES_PER_TICK]:
+                if len(line) > self.MAX_LINE_BYTES:
+                    continue
+                try:
+                    ev = parser.parse(line)
+                except Exception as e:
+                    self.log.debug(f"{path}: parser exception: {e}")
+                    ev = None
+                if ev:
+                    events.append(ev)
+                    parsed_count += 1
+
+            self.offsets[path] = new_offset
+            self.inodes[path] = inode
+            if parsed_count or lines:
+                self.log.debug(
+                    f"{path}: read {len(lines)} new line(s), parsed {parsed_count}"
+                )
+
+        if events:
+            self._save_state()
+        return events
 
 
 # ─── File Integrity Monitor ────────────────────────────────
@@ -261,22 +759,22 @@ class FileIntegrityMonitor:
                 # File became unreadable (permission revoked, removed)
                 if baseline is not None:
                     events.append({
-                        "eventType": "file.change",
+                        "event_type": "file.change",
                         "severity": "WARN",
                         "source": p,
                         "message": f"File no longer accessible: {p}",
-                        "rawData": {"previousHash": baseline, "currentHash": None},
+                        "raw_data": {"previousHash": baseline, "currentHash": None},
                     })
             elif baseline is None:
                 # New file discovered
                 self.baselines[p] = current
             elif current != baseline:
                 events.append({
-                    "eventType": "file.change",
+                    "event_type": "file.change",
                     "severity": "CRITICAL",
                     "source": p,
                     "message": f"File integrity violation: {p}",
-                    "rawData": {
+                    "raw_data": {
                         "previousHash": baseline,
                         "currentHash": current,
                     },
@@ -325,11 +823,11 @@ class ProcessMonitor:
                     for pat in self.patterns:
                         if pat.search(full):
                             events.append({
-                                "eventType": "process.new",
+                                "event_type": "process.new",
                                 "severity": "CRITICAL",
                                 "source": f"pid:{info.get('pid')}",
                                 "message": f"Suspicious process matched: {name}",
-                                "rawData": {
+                                "raw_data": {
                                     "pid": info.get("pid"),
                                     "name": name,
                                     "user": user,
@@ -371,6 +869,19 @@ class OpenShieldAgent:
         self.procmon = ProcessMonitor(
             self.config.get("process_watchlist") or [], self.log
         )
+        self.logtailer = LogTailer(
+            self.config.get("log_watchers") or [],
+            state_dir,
+            self.log,
+        )
+        # Identity: detected on every restart (this __init__) and refreshed
+        # every hour by flush(). Bos wants identity sent on EVERY restart,
+        # not just initial install — so server can track DHCP changes,
+        # IP rotation, hostname changes, etc.
+        self._identity_refresh_interval = 3600  # 1 hour
+        self._identity_last_refresh: float = 0.0
+        self._identity: Dict[str, str] = {}  # init empty dict FIRST so _refresh_identity can compare
+        self._refresh_identity(force=True)
 
         self.event_buffer: List[Dict[str, Any]] = []
         self.running = True
@@ -390,6 +901,7 @@ class OpenShieldAgent:
             "log_dir": "/var/log/openshield",
             "fim_paths": None,
             "process_watchlist": None,
+            "log_watchers": None,
         }
         if not os.path.exists(path):
             return defaults
@@ -507,12 +1019,61 @@ class OpenShieldAgent:
         if len(self.event_buffer) >= self.event_batch_size:
             self.flush()
 
+    def _refresh_identity(self, force: bool = False) -> None:
+        """Re-detect hostname/IP/OS/kernel and update cache.
+
+        Called on:
+          - __init__ (every agent restart → Bos's requirement)
+          - flush() if > 1 hour since last refresh (catches DHCP/IP rotation)
+          - force=True bypasses the timer
+        """
+        now = time.time()
+        if not force and (now - self._identity_last_refresh) < self._identity_refresh_interval:
+            return
+        try:
+            info = detect_host_info(self.log)
+            new_identity = {
+                "hostname": info.get("hostname"),
+                "ip": info.get("ip"),
+                "os": info.get("os"),
+                "kernel": info.get("kernel"),
+            }
+            # Compare against cache and log only if changed
+            if new_identity != self._identity:
+                self.log.info(
+                    f"Identity refresh: hostname={new_identity.get('hostname')}, "
+                    f"ip={new_identity.get('ip')}, os={new_identity.get('os')}"
+                )
+            self._identity = new_identity
+            self._identity_last_refresh = now
+        except Exception as e:
+            self.log.warning(f"detect_host_info failed during refresh: {e}")
+
     def flush(self) -> bool:
+        # Refresh identity if > 1 hour since last detect (handles DHCP lease
+        # renewal, IP rotation, hostname changes mid-flight)
+        self._refresh_identity()
+        # Convert internal snake_case keys to server-expected camelCase
+        # (buffer_event uses snake_case kwargs, server Zod schema uses camelCase)
+        server_events = []
+        for ev in self.event_buffer:
+            server_events.append({
+                "eventType": ev.get("event_type") or ev.get("eventType"),
+                "severity": ev["severity"],
+                "source": ev["source"],
+                "message": ev["message"],
+                "rawData": ev.get("raw_data") if ev.get("raw_data") is not None else ev.get("rawData"),
+                "eventTime": ev["eventTime"],
+            })
         body_obj = {
             "version": VERSION,
-            "events": self.event_buffer,
+            "events": server_events,
             "stats": get_system_stats(),
         }
+        # Always include identity block on EVERY heartbeat so server tracks
+        # hostname/IP changes (DHCP, IP rotation, multi-NIC). Even empty
+        # identity gets sent — server detects "no identity" vs "stale data".
+        body_obj["identity"] = self._identity or {}
         body = json.dumps(body_obj)
         sig = sign_body(self.secret_token, body)
         headers = {
@@ -570,6 +1131,9 @@ class OpenShieldAgent:
                 # 2. Process monitor
                 for ev in self.procmon.check():
                     self.buffer_event(**ev)
+                # 3. Log tailer (SSH brute force detection etc.)
+                for ev in self.logtailer.tick():
+                    self.buffer_event(**ev)
                 # 3. Heartbeat (with or without events)
                 self.flush()
                 # 4. Sleep
@@ -582,6 +1146,11 @@ class OpenShieldAgent:
         finally:
             self.log.info("Final flush before exit")
             self.flush()
+            # Save log tailer state so we resume from the right offset
+            try:
+                self.logtailer._save_state()
+            except Exception:
+                pass
 
 
 # ─── CLI ───────────────────────────────────────────────────

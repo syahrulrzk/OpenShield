@@ -78,7 +78,7 @@ export async function POST(
     credentials: {
       agentId: id,
       secretToken: newToken,
-      serverUrl: process.env.OPENSHIELD_PUBLIC_URL || "http://YOUR-SERVER:3001",
+      serverUrl: process.env.OPENSHIELD_PUBLIC_URL || process.env.OPENSHIELD_BASE_URL || "http://YOUR-SERVER:3001",
     },
     warning:
       "Old token is now INVALID. Update the agent's config file with the new credentials — shown ONCE.",

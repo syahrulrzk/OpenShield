@@ -48,7 +48,7 @@ export default function UpcomingEventsPage({ variant }: Props) {
     <div className="space-y-6">
       <div>
         <Link
-          href="/dashboard/events"
+          href="/dashboard/server"
           className="inline-flex items-center gap-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
         >
           <ArrowLeft className="h-3 w-3" />

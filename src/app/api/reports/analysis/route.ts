@@ -37,7 +37,7 @@ export async function GET(req: Request) {
       SELECT date_trunc('day', event_time) as day,
         COUNT(*) FILTER (WHERE status = 'SUCCESS') as success,
         COUNT(*) FILTER (WHERE status IN ('FAILED','INVALID')) as failed
-      FROM ssh_events
+      FROM server_events
       WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId})
         AND event_time >= ${since}
       GROUP BY day
@@ -57,7 +57,7 @@ export async function GET(req: Request) {
     // Top SSH attacker IPs
     prisma.$queryRaw<{ source_ip: string; count: bigint }[]>`
       SELECT source_ip, COUNT(*) as count
-      FROM ssh_events
+      FROM server_events
       WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId})
         AND status IN ('FAILED','INVALID') AND event_time >= ${since}
       GROUP BY source_ip
@@ -78,7 +78,7 @@ export async function GET(req: Request) {
     prisma.$queryRaw<{ username: string; ssh: bigint; db: bigint }[]>`
       SELECT u.username, COALESCE(s.cnt, 0) as ssh, COALESCE(d.cnt, 0) as db
       FROM (
-        SELECT username, COUNT(*) as cnt FROM ssh_events
+        SELECT username, COUNT(*) as cnt FROM server_events
         WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId})
           AND event_time >= ${since}
         GROUP BY username
@@ -89,7 +89,7 @@ export async function GET(req: Request) {
         GROUP BY username
       ) u
       LEFT JOIN (
-        SELECT username, COUNT(*) as cnt FROM ssh_events
+        SELECT username, COUNT(*) as cnt FROM server_events
         WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId})
           AND event_time >= ${since}
         GROUP BY username
@@ -108,12 +108,12 @@ export async function GET(req: Request) {
       SELECT
         a.hostname,
         (
-          (SELECT COUNT(*) FROM ssh_events WHERE asset_id = a.id AND event_time >= ${since})
+          (SELECT COUNT(*) FROM server_events WHERE asset_id = a.id AND event_time >= ${since})
           +
           (SELECT COUNT(*) FROM db_events WHERE asset_id = a.id AND event_time >= ${since})
         ) as events,
         (
-          (SELECT COUNT(*) FROM ssh_events WHERE asset_id = a.id AND event_time >= ${since} AND status IN ('FAILED','INVALID'))
+          (SELECT COUNT(*) FROM server_events WHERE asset_id = a.id AND event_time >= ${since} AND status IN ('FAILED','INVALID'))
           +
           (SELECT COUNT(*) FROM db_events WHERE asset_id = a.id AND event_time >= ${since} AND status IN ('FAILED','DENIED'))
         ) as failed
@@ -130,7 +130,7 @@ export async function GET(req: Request) {
       last_seen: Date;
     }[]>`
       SELECT e.username, a.hostname, COUNT(*) as count, MAX(e.event_time) as last_seen
-      FROM ssh_events e
+      FROM server_events e
       INNER JOIN assets a ON a.id = e.asset_id
       WHERE a.user_id = ${auth.userId}
         AND e.status = 'SUCCESS'
@@ -141,7 +141,7 @@ export async function GET(req: Request) {
       LIMIT 100
     `,
     // SSH success vs fail
-    prisma.sshEvent.groupBy({
+    prisma.serverEvent.groupBy({
       by: ["status"],
       where: { asset: { userId: auth.userId }, eventTime: { gte: since } },
       _count: { status: true },
@@ -155,7 +155,7 @@ export async function GET(req: Request) {
     // Hourly heatmap (day-of-week × hour)
     prisma.$queryRaw<{ dow: number; hour: number; count: bigint }[]>`
       SELECT EXTRACT(DOW FROM event_time)::int as dow, EXTRACT(HOUR FROM event_time)::int as hour, COUNT(*) as count
-      FROM ssh_events
+      FROM server_events
       WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId})
         AND event_time >= ${since}
       GROUP BY dow, hour
@@ -163,9 +163,9 @@ export async function GET(req: Request) {
     // Totals
     prisma.$queryRaw<{ ssh: bigint; db: bigint; failed: bigint }[]>`
       SELECT
-        (SELECT COUNT(*) FROM ssh_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since}) as ssh,
+        (SELECT COUNT(*) FROM server_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since}) as ssh,
         (SELECT COUNT(*) FROM db_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since}) as db,
-        (SELECT COUNT(*) FROM ssh_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since} AND status IN ('FAILED','INVALID'))
+        (SELECT COUNT(*) FROM server_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since} AND status IN ('FAILED','INVALID'))
         + (SELECT COUNT(*) FROM db_events WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${auth.userId}) AND event_time >= ${since} AND status IN ('FAILED','DENIED')) as failed
     `,
   ]);

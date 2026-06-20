@@ -21,7 +21,7 @@
 
 import { Client, type ConnectConfig } from "ssh2";
 import { decrypt } from "@/lib/security/crypto";
-import type { SshEventInput } from "./types";
+import type { ServerEventInput } from "./types";
 
 const AUTH_LOG_PATHS = [
   "/var/log/auth.log", // Debian/Ubuntu
@@ -37,7 +37,7 @@ const READ_CMD = (path: string) =>
 export type SshPollResult = {
   ok: boolean;
   newCursor: string | null;
-  events: SshEventInput[];
+  events: ServerEventInput[];
   bytesRead: number;
   error?: string;
 };
@@ -230,8 +230,8 @@ export async function pollSshAsset(params: {
 export function parseAuthLog(
   content: string,
   sinceMs?: number
-): SshEventInput[] {
-  const events: SshEventInput[] = [];
+): ServerEventInput[] {
+  const events: ServerEventInput[] = [];
   const lines = content.split("\n");
 
   // Regex for: "Mon DD HH:MM:SS host program[pid]: message"
@@ -266,14 +266,14 @@ export function parseAuthLog(
     // Only parse sshd lines
     if (!/sshd/i.test(line)) continue;
 
-    const ev = parseSshLine(msg, ts);
+    const ev = parseServerLine(msg, ts);
     if (ev) events.push(ev);
   }
 
   return events;
 }
 
-function parseSshLine(msg: string, ts: Date): SshEventInput | null {
+function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
   // Accepted password/publickey
   let m = msg.match(
     /Accepted\s+(publickey|password|keyboard-interactive)\s+for\s+(?:invalid user\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/

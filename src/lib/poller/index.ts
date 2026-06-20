@@ -25,7 +25,7 @@ import { signBody, getIngestSecret } from "@/lib/ingest/hmac";
 import { audit } from "@/lib/security/audit";
 import { randomUUID } from "node:crypto";
 import type {
-  SshEventInput,
+  ServerEventInput,
   DbEventInput,
   PollerRunResult,
 } from "./types";
@@ -50,6 +50,16 @@ type AssetRow = {
   pollerCursor: string | null;
   sshCredentials: { sshEncData: string | null } | null;
   dbCredentials: { dbEncData: string | null } | null;
+};
+
+// Environment → ANSI color (consistent with ingest route.ts so PROD failures
+// jump out the same way regardless of whether you read `[poll]` or `[evt]`)
+const ENV_COLOR: Record<string, string> = {
+  PROD: "\x1b[1;31m",   // bold red
+  STAGING: "\x1b[33m",  // yellow
+  UAT: "\x1b[34m",      // blue
+  DEV: "\x1b[90m",      // dim gray
+  DR: "\x1b[36m",       // cyan
 };
 
 /**
@@ -138,7 +148,7 @@ export async function runPollerCycle(opts: {
   // 4. Aggregate events, update cursors, post to ingest
   const allEvents: Array<{
     assetId: string;
-    events: { ssh?: SshEventInput[]; db?: DbEventInput[] };
+    events: { server?: ServerEventInput[]; db?: DbEventInput[] };
   }> = [];
   const errors: Array<{ assetId: string; hostname: string; error: string }> = [];
   let success = 0;
@@ -156,8 +166,22 @@ export async function runPollerCycle(opts: {
         eventsCollected += r.sshResult.events.length;
         allEvents.push({
           assetId: a.id,
-          events: { ssh: r.sshResult.events },
+          events: { server: r.sshResult.events },
         });
+        // Echo each SSH login attempt to the server console with the source
+        // IP, so `tail -f` on the server log shows login activity in real
+        // time without waiting for a DB query.
+        for (const ev of r.sshResult.events) {
+          const statusColor = ev.status === "SUCCESS" ? "\x1b[32m" : "\x1b[31m"; // red for FAILED / INVALID
+          const envColor = ENV_COLOR[a.environment] ?? "\x1b[0m";
+          process.stdout.write(
+            `${statusColor}[poll] ssh  ${ev.eventTime}  env=${a.environment}  asset=${a.hostname}  ` +
+              `user=${ev.username}  ip=${ev.sourceIp}  status=${ev.status}` +
+              (ev.method ? `  method=${ev.method}` : "") +
+              `  ${envColor}[${a.environment}]${"\x1b[0m"}` +
+              `\x1b[0m\n`
+          );
+        }
         // Update cursor
         await prisma.asset.update({
           where: { id: a.id },
@@ -190,6 +214,18 @@ export async function runPollerCycle(opts: {
           assetId: a.id,
           events: { db: r.dbResult.events },
         });
+        for (const ev of r.dbResult.events) {
+          if (!ev.sourceIp) continue;
+          const statusColor = ev.status === "SUCCESS" ? "\x1b[32m" : "\x1b[31m";
+          const envColor = ENV_COLOR[a.environment] ?? "\x1b[0m";
+          process.stdout.write(
+            `${statusColor}[poll] db   ${ev.eventTime}  env=${a.environment}  asset=${a.hostname}  ` +
+              `user=${ev.username}  ip=${ev.sourceIp}  status=${ev.status}` +
+              (ev.database ? `  db=${ev.database}` : "") +
+              `  ${envColor}[${a.environment}]${"\x1b[0m"}` +
+              `\x1b[0m\n`
+          );
+        }
         await prisma.asset.update({
           where: { id: a.id },
           data: {
@@ -350,7 +386,7 @@ function defaultPort(dbType: string): number {
 async function postToIngest(
   results: Array<{
     assetId: string;
-    events: { ssh?: SshEventInput[]; db?: DbEventInput[] };
+    events: { server?: ServerEventInput[]; db?: DbEventInput[] };
   }>,
   batchId: string
 ): Promise<number> {
@@ -386,8 +422,8 @@ async function postToIngest(
     const text = await res.text();
     throw new Error(`Ingest returned ${res.status}: ${text.slice(0, 200)}`);
   }
-  const data = (await res.json()) as { received: { ssh: number; db: number } };
-  return data.received.ssh + data.received.db;
+  const data = (await res.json()) as { received: { server: number; db: number } };
+  return data.received.server + data.received.db;
 }
 
 // Convenience re-exports

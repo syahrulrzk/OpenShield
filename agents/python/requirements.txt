@@ -1,3 +1,18 @@
+# OpenShield Python Agent — Runtime dependencies
+#
+# These are installed by install.sh via the system package manager (apt/dnf/yum/apk)
+# instead of pip, because PEP 668 blocks system pip installs on Ubuntu 24.04+.
+#
+# Mapping to system packages:
+#   requests  -> python3-requests  (Debian/Ubuntu) | python3-requests (RHEL/Fedora)
+#   PyYAML    -> python3-yaml      (Debian/Ubuntu) | python3-pyyaml     (RHEL/Fedora)
+#   psutil    -> python3-psutil    (Debian/Ubuntu) | python3-psutil     (RHEL/Fedora)
+#
+# If you need a virtualenv (e.g., for development or pinned versions), create one with:
+#   python3 -m venv /opt/openshield-agent/venv
+#   /opt/openshield-agent/venv/bin/pip install -r requirements.txt
+#   # then point systemd ExecStart at the venv python
+
 requests>=2.31
 PyYAML>=6.0
 psutil>=5.9

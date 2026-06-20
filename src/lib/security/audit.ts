@@ -49,7 +49,8 @@ export type AuditAction =
   | "agent.token.rotated"
   | "agent.bundle.downloaded"
   | "agent.deleted"
-  | "agent.install_script.generated";
+  | "agent.install_script.generated"
+  | "events.deleted";
 
 export type AuditInput = {
   userId?: string | null;

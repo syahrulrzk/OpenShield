@@ -27,6 +27,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { decrypt } from "@/lib/security/crypto";
 import { audit } from "@/lib/security/audit";
+import { getVersionStatus } from "@/lib/agent-versions";
+import { getAgentCompat } from "@/lib/agent-versions.server";
 
 const agentEventSchema = z.object({
   eventType: z.enum([
@@ -68,6 +70,40 @@ const heartbeatSchema = z.object({
 });
 
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 min
+
+/**
+ * Extract a stable dedup signature from rawData + message so that two
+ * events with different user/IP/method don't aggregate together.
+ * Examples:
+ *   "Failed password for gm from 1.2.3.4" → "gm|1.2.3.4"
+ *   "SSH login OK (publickey) for linux from 10.1.1.100" → "linux|10.1.1.100"
+ *   "sudo: COMMAND=apt update by root" → "root"
+ */
+function extractDedupKey(
+  rawData: unknown,
+  message: string
+): string {
+  let user: string | null = null;
+  let ip: string | null = null;
+  if (rawData && typeof rawData === "object" && !Array.isArray(rawData)) {
+    const rd = rawData as Record<string, unknown>;
+    const u = rd.user ?? rd.username ?? rd.account ?? rd.subject;
+    if (typeof u === "string" && u.length > 0) user = u;
+    if (typeof rd.ip === "string" && rd.ip.length > 0 && rd.ip !== "0.0.0.0") {
+      ip = rd.ip;
+    }
+  }
+  if (!user) {
+    // Fallback: regex from message
+    const m = message.match(/\b(?:for|user=)\s+([a-zA-Z0-9._\-]+)/i);
+    if (m) user = m[1];
+  }
+  if (!ip) {
+    const m = message.match(/\bfrom\s+((?:\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]+)\b/);
+    if (m) ip = m[1];
+  }
+  return `${user ?? "_unknown"}|${ip ?? "_unknown"}`;
+}
 
 async function verifyAgentSignature(
   agentId: string,
@@ -156,18 +192,31 @@ export async function POST(req: NextRequest) {
 
   const stats = { eventsInserted: 0, eventsDeduped: 0, errors: 0 };
 
-  // 3. Insert events (with dedup-with-aggregation like SshEvent)
+  // 3. Insert events (with dedup-with-aggregation like ServerEvent)
   if (body.events?.length) {
     for (const e of body.events) {
       const eventTime = new Date(e.eventTime);
       const dedupStart = new Date(eventTime.getTime() - DEDUP_WINDOW_MS);
+      // Extract dedup signature from message + rawData so events with
+      // DIFFERENT users/IPs/methods don't aggregate together. Without this,
+      // "Failed password for testuser" + "Failed password for gm" + "Failed
+      // password for hacker20" (all same source/severity/5min) would merge
+      // into one row, leaving rawData stale while message updates → confusing
+      // "user: testuser, message: ...for gm" UI mismatch.
+      const dedupUser = extractDedupKey(e.rawData, e.message);
+      const dedupSig = `${dedupUser}|${e.source}|${e.severity}`;
       try {
         const existing = await prisma.agentEvent.findFirst({
           where: {
             agentId,
             eventType: e.eventType,
-            source: e.source,
-            severity: e.severity,
+            // Dedup by (user, source, severity, time-window) — not just source.
+            // Two events dedupe only if they represent the SAME auth attempt
+            // pattern from the SAME user/source.
+            rawData: {
+              path: ["_dedupSig"],
+              equals: dedupSig,
+            },
             eventTime: { gte: dedupStart },
           },
           select: { id: true },
@@ -178,7 +227,10 @@ export async function POST(req: NextRequest) {
             data: {
               count: { increment: 1 },
               eventTime,
-              message: e.message, // update to latest message
+              message: e.message,
+              rawData: e.rawData
+                ? { ...(e.rawData as Record<string, unknown>), _dedupSig: dedupSig }
+                : { _dedupSig: dedupSig },
             },
           });
           stats.eventsDeduped++;
@@ -190,7 +242,9 @@ export async function POST(req: NextRequest) {
               severity: e.severity,
               source: e.source,
               message: e.message,
-              rawData: e.rawData ?? undefined,
+              rawData: e.rawData
+                ? { ...(e.rawData as Record<string, unknown>), _dedupSig: dedupSig }
+                : { _dedupSig: dedupSig },
               eventTime,
               count: 1,
             },
@@ -242,6 +296,17 @@ export async function POST(req: NextRequest) {
     status: "ONLINE",
     config,
     stats,
+    // Version compatibility info — agent uses this to decide whether
+    // to log a "self-update available" hint. Dashboard also reads this.
+    versionCompat: (() => {
+      const compat = getAgentCompat();
+      return {
+        agentVersion: body.version,
+        minVersion: compat.min,
+        latestVersion: compat.latest,
+        status: getVersionStatus(body.version, compat),
+      };
+    })(),
   });
 }
 

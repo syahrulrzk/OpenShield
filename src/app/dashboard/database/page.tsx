@@ -17,8 +17,6 @@ const ENV_META: Record<string, { label: string; color: string }> = {
   PROD: { label: "Production", color: "#ef4444" },
   STAGING: { label: "Staging", color: "#f97316" },
   UAT: { label: "UAT", color: "#3b82f6" },
-  DEV: { label: "Development", color: "#10b981" },
-  DR: { label: "DR", color: "#a855f7" },
 };
 
 type Search = { range?: string; status?: string; dbType?: string; q?: string; env?: string };
@@ -52,7 +50,7 @@ export default async function DatabaseEventsPage({
           ? "DENIED"
           : undefined;
 
-  const envFilter = sp.env && ["PROD", "STAGING", "UAT", "DEV", "DR"].includes(sp.env) ? sp.env : undefined;
+  const envFilter = sp.env && ["PROD", "STAGING", "UAT"].includes(sp.env) ? sp.env : undefined;
 
   // Build search OR clause
   const q = sp.q?.trim();
@@ -130,7 +128,7 @@ export default async function DatabaseEventsPage({
     if (merged.q) params.set("q", merged.q);
     if (merged.env) params.set("env", merged.env);
     const q = params.toString();
-    return q ? `/dashboard/events/database?${q}` : "/dashboard/events/database";
+    return q ? `/dashboard/database?${q}` : "/dashboard/database";
   }
 
   const rangeOptions: DropdownOption[] = [
@@ -192,7 +190,7 @@ export default async function DatabaseEventsPage({
           </p>
         </div>
         <Link
-          href="/dashboard/events"
+          href="/dashboard/server"
           className="text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
         >
           ← SSH Events
@@ -227,7 +225,7 @@ export default async function DatabaseEventsPage({
 
       {/* Filters — single row (wraps on mobile) */}
       <div className="flex flex-wrap items-center gap-2">
-        <form action="/dashboard/events/database" method="get" className="flex-1 min-w-[180px] flex items-center gap-2">
+        <form action="/dashboard/database" method="get" className="flex-1 min-w-[180px] flex items-center gap-2">
           <div className="relative flex-1 min-w-0">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--muted-foreground)] pointer-events-none" />
             <input
@@ -239,7 +237,7 @@ export default async function DatabaseEventsPage({
             />
             {sp.q && (
               <Link
-                href={`/dashboard/events/database${(() => {
+                href={`/dashboard/database${(() => {
                   const p = new URLSearchParams();
                   if (sp.range && sp.range !== "24h") p.set("range", sp.range);
                   if (sp.status && sp.status !== "all") p.set("status", sp.status);
@@ -291,7 +289,7 @@ export default async function DatabaseEventsPage({
         />
         {(q || envFilter || statusFilter || dbTypeFilter) && (
           <Link
-            href="/dashboard/events/database"
+            href="/dashboard/database"
             scroll={false}
             className="h-9 px-2.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04] flex items-center gap-1.5"
           >
@@ -317,15 +315,15 @@ export default async function DatabaseEventsPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[640px]">
               <thead>
-                <tr className="border-b border-[var(--border)] bg-white/[0.02]">
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Status</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Time</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Asset</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Env</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">DB</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Username</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden md:table-cell">Database</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden md:table-cell">Source IP</th>
+                <tr className="border-b border-[var(--border)] bg-white/[0.02] divide-x divide-[var(--border)]">
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Status</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Time</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Asset</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Env</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">DB</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Username</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden md:table-cell">Database</th>
+                  <th className="text-center px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)] hidden md:table-cell">Source IP</th>
                 </tr>
               </thead>
               <tbody>
@@ -333,8 +331,8 @@ export default async function DatabaseEventsPage({
                   const meta = DB_TYPE_BADGE[e.dbType];
                   const eMeta = ENV_META[e.asset.environment];
                   return (
-                    <tr key={e.id} className="border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors">
-                      <td className="px-4 py-3">
+                    <tr key={e.id} className="border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors divide-x divide-[var(--border)]">
+                      <td className="px-4 py-3 text-center">
                         {e.status === "SUCCESS" ? (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--success)]">
                             <CheckCircle2 className="h-3.5 w-3.5" /> Success
@@ -349,8 +347,8 @@ export default async function DatabaseEventsPage({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs font-mono text-[var(--muted-foreground)] whitespace-nowrap">
-                        <div className="flex items-center gap-1.5">
+                      <td className="px-4 py-3 text-center text-xs font-mono text-[var(--muted-foreground)] whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 justify-center">
                           <Clock className="h-3 w-3 opacity-50" />
                           {new Date(e.eventTime).toLocaleString("id-ID", {
                             day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
@@ -365,8 +363,8 @@ export default async function DatabaseEventsPage({
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-xs font-mono font-medium">{e.asset.hostname}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-center text-xs font-mono font-medium">{e.asset.hostname}</td>
+                      <td className="px-4 py-3 text-center">
                         {eMeta && (
                           <span
                             className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold tracking-wider"
@@ -380,17 +378,17 @@ export default async function DatabaseEventsPage({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-center">
                         {meta && (
-                          <div className="flex items-center gap-1.5 text-xs">
+                          <div className="flex items-center gap-1.5 text-xs justify-center">
                             <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
                             <span className="font-medium" style={{ color: meta.color }}>{meta.label}</span>
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs font-mono">{e.username}</td>
-                      <td className="px-4 py-3 text-xs font-mono text-[var(--muted-foreground)] hidden md:table-cell">{e.database || "—"}</td>
-                      <td className="px-4 py-3 text-xs font-mono text-[var(--muted-foreground)] hidden md:table-cell">{e.sourceIp || "—"}</td>
+                      <td className="px-4 py-3 text-center text-xs font-mono">{e.username}</td>
+                      <td className="px-4 py-3 text-center text-xs font-mono text-[var(--muted-foreground)] hidden md:table-cell">{e.database || "—"}</td>
+                      <td className="px-4 py-3 text-center text-xs font-mono text-[var(--muted-foreground)] hidden md:table-cell">{e.sourceIp || "—"}</td>
                     </tr>
                   );
                 })}
