@@ -135,3 +135,26 @@ Dashboard will show all agents at v1.2.0 within 30s of next heartbeat.
 - `scripts/check-agent-sync.sh` — the guard implementation
 - `.husky/pre-commit` — git hook wrapper
 - `src/lib/agent-versions.ts` — version compat source
+
+## SSH Port Metadata (added v1.2.0)
+
+Every SSH event in OpenShield now carries two port fields:
+
+| Field | Meaning | Range | Stable? |
+|-------|---------|-------|---------|
+| `port` | Client **source port** (ephemeral) | 32768-60999 (Linux) / 49152-65535 (Windows) | No — random per connection |
+| `serverPort` | SSH **server destination port** | 22 (default), 2222 / 5322 / etc | Yes — daemon listen config |
+
+Why? Because OS clients choose a random source port for every TCP connection (per RFC 6335 / IANA ephemeral port range). Seeing a new `port` per event is **normal**, not an anomaly. To check if SSH is on a non-standard server port, filter on `serverPort != 22`.
+
+The new `sshd.connection` event surfaces every incoming TCP connection (logged at the start of each session, before auth), and flags non-standard server ports:
+
+```
+sshd.connection | client=10.1.1.100:50322 → server=172.16.19.235:2222 | isStandardPort=false
+```
+
+This catches scenarios like:
+- SSH daemon moved to port 2222 (security through obscurity — usually a red flag)
+- Port scanners hitting SSH on non-standard ports
+- Misconfigured reverse proxies forwarding non-standard ports
+

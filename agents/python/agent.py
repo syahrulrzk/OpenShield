@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -400,6 +400,18 @@ class SshdParser:
     RE_COMMAND_SESSION = re.compile(
         r"Starting session: command(?: (.+?))? for (\S+) from ([\d.]+) port (\d+)"
     )
+    # "Connection from 10.1.1.100 port 50322 on 172.16.19.235 port 22 rdomain \"\""
+    # sshd logs this on the FIRST line of every incoming connection — captures
+    # both the client source port (ephemeral, random per connection) and the
+    # server destination port (typically 22 for SSH, or 2222 / 5322 / etc if
+    # the daemon listens on a non-standard port). Useful for:
+    #   - distinguishing real SSH connections from honeypots / port scans
+    #   - detecting SSH on non-standard ports (security audit)
+    # rdomain may be empty (\"\") or a SELinux context (\"system_u:...\").
+    # The rdomain group is non-capturing because we don't need the SELinux label.
+    RE_CONN_FROM = re.compile(
+        r"Connection from ([\d.]+) port (\d+) on ([\d.]+) port (\d+)"
+    )
 
     def parse(self, line: str) -> Optional[Dict[str, Any]]:
         """Return event dict or None if line doesn't match sshd patterns."""
@@ -417,7 +429,8 @@ class SshdParser:
                     "event": "sshd.failed_password",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": 22,        # SSH server port (implicit in auth.log)
                     "parser": "sshd",
                 },
             }
@@ -495,6 +508,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port) if port else None,
+                    "serverPort": 22,       # SSH server port (implicit in auth.log)
                     "parser": "sshd",
                 },
             }
@@ -510,7 +524,8 @@ class SshdParser:
                     "event": "sshd.sftp_session",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": 22,        # SSH server port (implicit in auth.log)
                     "service": "SFTP",
                     "parser": "sshd",
                 },
@@ -527,7 +542,8 @@ class SshdParser:
                     "event": "sshd.sftp_session",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": 22,        # SSH server port (implicit in auth.log)
                     "service": "SFTP",
                     "parser": "sshd",
                 },
@@ -544,7 +560,8 @@ class SshdParser:
                     "event": "sshd.scp_session",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": 22,        # SSH server port (implicit in auth.log)
                     "service": "SCP",
                     "parser": "sshd",
                 },
@@ -561,7 +578,8 @@ class SshdParser:
                     "event": "sshd.shell_session",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": 22,        # SSH server port (implicit in auth.log)
                     "tty": tty,
                     "service": "SSH",
                     "parser": "sshd",
@@ -584,8 +602,39 @@ class SshdParser:
                     "event": "sshd.command_session",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral)
+                    "serverPort": 22,       # SSH server port (implicit in log)
                     "command": cmd_short,
+                    "service": "SSH",
+                    "parser": "sshd",
+                },
+            }
+        # First line of every incoming TCP connection. We surface this as a
+        # separate event so dashboards can show "who tried to connect" before
+        # any auth attempt — useful for detecting port scans and failed-handshake
+        # bursts. Low severity because not every connection is malicious.
+        m = self.RE_CONN_FROM.search(line)
+        if m:
+            client_ip, client_port, server_ip, server_port = m.groups()
+            # Heuristic: if server_port != 22, flag as "non-standard SSH" so
+            # security audits can quickly surface unexpected listeners.
+            is_standard = (int(server_port) == 22)
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": (
+                    f"SSH connection from {client_ip}:{client_port} → "
+                    f"{server_ip}:{server_port}"
+                    f"{'' if is_standard else ' (non-standard SSH port)'}"
+                ),
+                "raw_data": {
+                    "event": "sshd.connection",
+                    "ip": client_ip,
+                    "port": int(client_port),   # client source port (random)
+                    "serverIp": server_ip,
+                    "serverPort": int(server_port),
+                    "isStandardPort": is_standard,
                     "service": "SSH",
                     "parser": "sshd",
                 },

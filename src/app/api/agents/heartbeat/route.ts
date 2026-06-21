@@ -102,7 +102,23 @@ function extractDedupKey(
     const m = message.match(/\bfrom\s+((?:\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]+)\b/);
     if (m) ip = m[1];
   }
-  return `${user ?? "_unknown"}|${ip ?? "_unknown"}`;
+  // For connection-class events (sshd.connection), the client source port
+  // is part of the unique identity — same IP can open many parallel SSH
+  // sessions, each with its own ephemeral port. Without including port,
+  // two unrelated connections from the same IP within the dedup window
+  // would falsely merge into one row.
+  let portSuffix = "";
+  if (rawData && typeof rawData === "object" && !Array.isArray(rawData)) {
+    const rd = rawData as Record<string, unknown>;
+    const evtType = typeof rd.event === "string" ? rd.event : "";
+    if (evtType === "sshd.connection") {
+      const p = rd.port ?? rd.clientPort;
+      if (typeof p === "number" || typeof p === "string") {
+        portSuffix = `:${p}`;
+      }
+    }
+  }
+  return `${user ?? "_unknown"}|${ip ?? "_unknown"}${portSuffix}`;
 }
 
 async function verifyAgentSignature(
