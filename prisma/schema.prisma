@@ -301,6 +301,12 @@ model TEventLogServerAuth {
   method    String?
   // GeoIP country (NULL until GeoIP feature ships)
   country   String?
+  // Source log file path (e.g. "/var/log/auth.log", "/var/log/secure")
+  sourceFile String?   @map("source_file")
+  // Client source port (ephemeral, e.g. 55001 for SSH)
+  sourcePort Int?      @map("source_port")
+  // Service that produced the event ("sshd", "sudo", "su", etc.)
+  service   String?
   // Event time
   eventTime DateTime     @map("event_time")
   // Raw log line (for audit/debug)

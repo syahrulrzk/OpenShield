@@ -94,6 +94,9 @@ const serverEventSchema = z.object({
   eventTime: z.string().datetime(),
   country: z.string().max(8).optional(),
   raw: z.string().max(4096).optional(),
+  sourceFile: z.string().max(256).optional(),
+  sourcePort: z.number().int().min(1).max(65535).optional(),
+  service: z.string().max(32).optional(),
 });
 
 const dbEventSchema = z.object({
@@ -247,6 +250,9 @@ export async function POST(req: NextRequest) {
               status: e.status,
               method: e.method ?? null,
               country: e.country ?? null,
+              sourceFile: e.sourceFile ?? null,
+              sourcePort: typeof e.sourcePort === "number" ? e.sourcePort : null,
+              service: e.service ?? null,
               eventTime,
               raw: e.raw ?? null,
               count: 1,

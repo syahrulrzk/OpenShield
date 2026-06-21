@@ -10,6 +10,9 @@ export type ServerEventInput = {
   eventTime: string; // ISO
   country?: string;
   raw?: string;
+  sourceFile?: string;
+  sourcePort?: number;
+  service?: string;
 };
 
 export type DbEventInput = {

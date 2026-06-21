@@ -330,6 +330,9 @@ export default async function ServerEventsPage({
         status: true,
         method: true,
         country: true,
+        sourceFile: true,
+        sourcePort: true,
+        service: true,
         raw: true,
         eventTime: true,
         count: true,
@@ -346,17 +349,29 @@ export default async function ServerEventsPage({
       e.status === "FAILED" ? "FAILED" :
       "DENIED"; // INVALID → DENIED for UI compat
     const severity = e.status === "SUCCESS" ? "INFO" : e.status === "FAILED" ? "WARN" : "ERROR";
+    // Source log: prefer DB column (sourceFile = /var/log/auth.log), fallback to raw
+    // The DB column reflects the agent's source field which is the actual log file path.
+    const source = e.sourceFile ?? "auth.log";
+    // Parse port from raw line if not stored (backward compat with old rows)
+    let clientPort = e.sourcePort ?? null;
+    if (clientPort === null && e.raw) {
+      const m = e.raw.match(/\bport\s+(\d{2,5})\b/i);
+      if (m) clientPort = parseInt(m[1], 10);
+    }
     return {
       id: e.id,
       eventType: "log.line",
       severity,
-      source: `ssh:${e.username}@${e.sourceIp}`,
+      source,
       message: e.raw ?? `${e.status} for ${e.username} from ${e.sourceIp}`,
       rawData: {
         username: e.username,
         ip: e.sourceIp,
         status: e.status,
         method: e.method,
+        service: e.service,
+        port: clientPort,
+        serverPort: clientPort !== null ? 22 : null,
       },
       eventTime: e.eventTime,
       count: e.count,
@@ -407,8 +422,7 @@ export default async function ServerEventsPage({
             Server Auth
           </h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            SSH login events, sudo, cron dari /var/log/auth.log &amp; /var/log/secure.
-            Syslog, nginx &amp; kernel punya menu masing-masing (Syslog, Apps).
+            SSH login events, sudo, cron dari /var/log/auth.log &amp;.
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">

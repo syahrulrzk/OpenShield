@@ -245,6 +245,22 @@ async function insertServerAuthEvent(
     event === "sshd.invalid_user" ? "INVALID" :
     "SUCCESS";
   const method = typeof rawData?.method === "string" ? rawData.method : null;
+  // Source log file path (agent sets source = /var/log/auth.log etc.)
+  const sourceFile = typeof e.source === "string" && e.source.length > 0 ? e.source : null;
+  // Client source port (ephemeral). Server port stays implicit (=22 for SSH)
+  // since auth.log doesn't log the destination port explicitly.
+  const sourcePort =
+    typeof rawData?.port === "number" ? rawData.port :
+    typeof rawData?.clientPort === "number" ? rawData.clientPort :
+    null;
+  // Service identifier (sshd, sudo, su, etc.) — derived from rawData.event prefix
+  const service = typeof rawData?.service === "string"
+    ? rawData.service
+    : event.startsWith("sshd.")
+      ? "sshd"
+      : event.startsWith("sudo.")
+        ? "sudo"
+        : null;
 
   // Dedup by (username + sourceIp + status + method). t_event_log_server_auth
   // has structured columns (no rawData JSONB) so we filter on the
@@ -279,6 +295,9 @@ async function insertServerAuthEvent(
       sourceIp,
       status,
       method,
+      sourceFile,
+      sourcePort,
+      service,
       raw: e.message + " | sig=" + dedupSig,
       eventTime,
       count: 1,

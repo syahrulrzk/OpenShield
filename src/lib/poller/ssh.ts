@@ -152,7 +152,7 @@ export async function pollSshAsset(params: {
           stream.on("end", () => {
             clearTimeout(timeout);
             sftp.end();
-            const events = parseAuthLog(buf, sinceMs);
+            const events = parseAuthLog(buf, sinceMs, path);
             safeResolve({
               ok: true,
               newCursor: String(stats.size),
@@ -184,7 +184,7 @@ export async function pollSshAsset(params: {
             return tryAuthLog(idx + 1);
           }
           clearTimeout(timeout);
-          const events = parseAuthLog(buf, sinceMs);
+          const events = parseAuthLog(buf, sinceMs, path);
           // No cursor without SFTP — fall back to last-line marker
           safeResolve({
             ok: true,
@@ -229,7 +229,8 @@ export async function pollSshAsset(params: {
  */
 export function parseAuthLog(
   content: string,
-  sinceMs?: number
+  sinceMs?: number,
+  sourceFile?: string
 ): ServerEventInput[] {
   const events: ServerEventInput[] = [];
   const lines = content.split("\n");
@@ -266,14 +267,19 @@ export function parseAuthLog(
     // Only parse sshd lines
     if (!/sshd/i.test(line)) continue;
 
-    const ev = parseServerLine(msg, ts);
+    const ev = parseServerLine(msg, ts, sourceFile);
     if (ev) events.push(ev);
   }
 
   return events;
 }
 
-function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
+function parseServerLine(msg: string, ts: Date, sourceFile?: string): ServerEventInput | null {
+  const baseExtras = {
+    sourceFile: sourceFile ?? undefined,
+    service: "sshd" as const,
+  };
+
   // Accepted password/publickey
   let m = msg.match(
     /Accepted\s+(publickey|password|keyboard-interactive)\s+for\s+(?:invalid user\s+)?(\S+)\s+from\s+(\S+)\s+port\s+(\d+)/
@@ -286,6 +292,8 @@ function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
       method: m[1].toLowerCase(),
       eventTime: ts.toISOString(),
       raw: msg.slice(0, 500),
+      sourcePort: parseInt(m[4], 10),
+      ...baseExtras,
     };
   }
 
@@ -301,6 +309,8 @@ function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
       method: "password",
       eventTime: ts.toISOString(),
       raw: msg.slice(0, 500),
+      sourcePort: parseInt(m[3], 10),
+      ...baseExtras,
     };
   }
 
@@ -314,6 +324,7 @@ function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
       method: "unknown",
       eventTime: ts.toISOString(),
       raw: msg.slice(0, 500),
+      ...baseExtras,
     };
   }
 
@@ -329,6 +340,8 @@ function parseServerLine(msg: string, ts: Date): ServerEventInput | null {
       method: "publickey",
       eventTime: ts.toISOString(),
       raw: msg.slice(0, 500),
+      sourcePort: parseInt(m[3], 10),
+      ...baseExtras,
     };
   }
 

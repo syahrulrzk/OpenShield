@@ -250,6 +250,9 @@ export async function GET(req: NextRequest) {
         status: true,
         method: true,
         country: true,
+        sourceFile: true,
+        sourcePort: true,
+        service: true,
         raw: true,
         eventTime: true,
         count: true,
@@ -268,17 +271,28 @@ export async function GET(req: NextRequest) {
       e.status === "SUCCESS" ? "SUCCESS" :
       e.status === "FAILED" ? "FAILED" :
       "DENIED"; // INVALID → DENIED for UI compat
+    // Source log: prefer DB column (sourceFile = /var/log/auth.log), fallback to raw
+    const source = e.sourceFile ?? "auth.log";
+    // Parse port from raw line if not stored (backward compat with old rows)
+    let clientPort = e.sourcePort ?? null;
+    if (clientPort === null && e.raw) {
+      const m = e.raw.match(/\bport\s+(\d{2,5})\b/i);
+      if (m) clientPort = parseInt(m[1], 10);
+    }
     return {
       id: e.id,
       eventType: "log.line",
       severity: e.status === "SUCCESS" ? "INFO" : e.status === "FAILED" ? "WARN" : "ERROR",
-      source: `ssh:${e.username}@${e.sourceIp}`,
+      source,
       message: e.raw ?? `${e.status} for ${e.username} from ${e.sourceIp}`,
       rawData: {
         username: e.username,
         ip: e.sourceIp,
         status: e.status,
         method: e.method,
+        service: e.service,
+        port: clientPort,
+        serverPort: clientPort !== null ? 22 : null,
       },
       eventTime: e.eventTime,
       count: e.count,
