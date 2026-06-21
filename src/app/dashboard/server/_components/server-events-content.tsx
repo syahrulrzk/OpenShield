@@ -479,7 +479,7 @@ export function ServerEventsContent({
           Searching for:{" "}
           <span className="text-[var(--accent)]">&quot;{data.q}&quot;</span>
           <span className="opacity-60">
-            · matches message, source, user, source IP, and dates (ISO / id-ID)
+            · matches message, source log, user, source IP, and dates (ISO / id-ID)
           </span>
         </div>
       )}
@@ -526,7 +526,7 @@ export function ServerEventsContent({
                   <tr className="border-b border-[var(--border)] bg-white/[0.02] divide-x divide-[var(--border)]">
                     <Th>Status</Th>
                     <Th>Time</Th>
-                    <Th>Source</Th>
+                    <Th>Source log</Th>
                     <Th>User</Th>
                     <Th className="min-w-[180px]">Agent</Th>
                     <Th>Source IP</Th>
