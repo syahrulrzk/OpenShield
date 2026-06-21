@@ -67,7 +67,7 @@ const navGroups: NavGroup[] = [
     items: [
       {
         href: "/dashboard/agents",
-        label: "Agents",
+        label: "Agent Endpoint",
         icon: Cpu,
         requiresRole: ["OWNER", "ADMIN"] as const,
       },
@@ -76,7 +76,7 @@ const navGroups: NavGroup[] = [
         label: "Event Log",
         icon: Activity,
         children: [
-          { href: "/dashboard/server", label: "Server", icon: Terminal },
+          { href: "/dashboard/server", label: "Server Auth", icon: Terminal },
           { href: "/dashboard/database", label: "Database", icon: Database },
           {
             href: "/dashboard/apps",

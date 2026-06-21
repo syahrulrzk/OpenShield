@@ -35,19 +35,12 @@ export function UserMenu({ user }: { user: { email: string; role: string } }) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 h-9 px-2 rounded-lg border border-[var(--border)] hover:border-[var(--accent-border)] hover:bg-white/[0.04] transition-colors"
+        className="flex items-center justify-center h-9 w-9 rounded-lg border border-[var(--border)] hover:border-[var(--accent-border)] hover:bg-white/[0.04] transition-colors"
         aria-label="User menu"
+        title={user.email}
       >
         <div className="h-7 w-7 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent-border)] text-[var(--accent)] flex items-center justify-center">
           <User className="h-4 w-4" strokeWidth={2.25} />
-        </div>
-        <div className="hidden sm:block text-left min-w-0">
-          <div className="text-xs font-medium leading-tight truncate max-w-[120px]">
-            {user.email.split("@")[0]}
-          </div>
-          <div className="text-[10px] text-[var(--muted-foreground)] leading-tight font-mono uppercase tracking-wider">
-            {user.role}
-          </div>
         </div>
       </button>
 

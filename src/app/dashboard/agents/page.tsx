@@ -17,7 +17,7 @@ export default async function AgentsPage() {
       {/* Page header */}
       <header className="space-y-1">
         <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-          Agents
+          Agent Endpoint
         </h1>
         <p className="text-sm text-[var(--muted-foreground)] mt-1 max-w-2xl">
           Lightweight monitoring agents deployed ke server remote. Generate
