@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
-import { CheckCircle2, XCircle, Database, ShieldOff, Clock, Search, X } from "lucide-react";
+import { CheckCircle2, XCircle, Database, ShieldOff, Clock, Search, X, Server, Activity } from "lucide-react";
 import { DatabaseHeader } from "./_components/database-header";
 import { DatabaseAssetsPanel } from "./_components/database-assets-panel";
 import { subHours, subDays } from "date-fns";
@@ -202,8 +202,44 @@ export default async function DatabaseEventsPage({
       {/* Header */}
       <DatabaseHeader />
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {/* ────────────────────────────────────────────────────────── */}
+      {/* SECTION 1: ASSETS (monitored databases)                  */}
+      {/* ────────────────────────────────────────────────────────── */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Server className="h-4 w-4 text-[var(--primary)]" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
+              Database Assets
+            </h2>
+            <span className="text-[10px] text-zinc-600 font-mono">{assets.length}</span>
+          </div>
+          <p className="text-[10px] text-[var(--muted-foreground)]">
+            Login attempts are polled from each asset below
+          </p>
+        </div>
+        <DatabaseAssetsPanel assets={assets} />
+      </section>
+
+      {/* ────────────────────────────────────────────────────────── */}
+      {/* SECTION 2: EVENTS (login attempts log)                   */}
+      {/* ────────────────────────────────────────────────────────── */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-[var(--primary)]" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
+              Login Event Log
+            </h2>
+            <span className="text-[10px] text-zinc-600 font-mono">{total.toLocaleString()}</span>
+          </div>
+          <p className="text-[10px] text-[var(--muted-foreground)]">
+            Last {range === "1h" ? "1 hour" : range === "7d" ? "7 days" : "24 hours"}
+          </p>
+        </div>
+
+      {/* Stats row — event KPI summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-semibold">Total</div>
           <div className="mt-1 text-2xl font-semibold font-mono">{total}</div>
@@ -227,9 +263,6 @@ export default async function DatabaseEventsPage({
           <div className="mt-1 text-2xl font-semibold font-mono text-[var(--warning)]">{deniedCount}</div>
         </div>
       </div>
-
-      {/* Assets panel — monitored databases */}
-      <DatabaseAssetsPanel assets={assets} />
 
       {/* Filters — single row (wraps on mobile) */}
       <div className="flex flex-wrap items-center gap-2">
@@ -413,6 +446,7 @@ export default async function DatabaseEventsPage({
           {envFilter && <span className="ml-2 text-[var(--accent)]">· env: {envFilter}</span>}
         </div>
       )}
+      </section>
     </div>
   );
 }
