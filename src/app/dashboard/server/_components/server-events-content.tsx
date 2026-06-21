@@ -19,14 +19,17 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   Clock,
   Copy,
   FolderOpen,
   Globe,
   HardDrive,
+  Hash,
   Info,
   Loader2,
+  Network,
   Search,
   Server,
   Shield,
@@ -120,6 +123,34 @@ const SERVICE_META: Record<string, { label: string; color: string; icon: any }> 
   SERVICE: { label: "service", color: "#3b82f6", icon: Server },
   EVENTLOG: { label: "EVTLOG", color: "#64748b", icon: Activity },
 };
+
+// Extract port info from raw_data. Returns { client, server, isStandard } or null.
+// Client port is the ephemeral source port (random per connection).
+// Server port is the SSH/daemon listen port (stable, usually 22).
+// isStandard=false highlights non-standard server ports (security audit).
+function getEventPort(rawData: unknown): {
+  client: number | null;
+  server: number | null;
+  isStandard: boolean;
+} | null {
+  if (!rawData || typeof rawData !== "object" || Array.isArray(rawData)) return null;
+  const rd = rawData as Record<string, unknown>;
+  const client =
+    typeof rd.port === "number"
+      ? rd.port
+      : typeof rd.clientPort === "number"
+        ? rd.clientPort
+        : null;
+  const server =
+    typeof rd.serverPort === "number"
+      ? rd.serverPort
+      : typeof rd.dstPort === "number"
+        ? rd.dstPort
+        : null;
+  if (client === null && server === null) return null;
+  const isStandard = server === 22 || server === null;
+  return { client, server, isStandard };
+}
 
 function getEventType(rawData: unknown, message: string, source: string): string | null {
   if (rawData && typeof rawData === "object" && !Array.isArray(rawData)) {
@@ -486,7 +517,7 @@ export function ServerEventsContent({
                     <Th className="min-w-[180px]">Agent</Th>
                     <Th>IP</Th>
                     <Th>Service</Th>
-                    <Th>Message</Th>
+                    <Th>Port</Th>
                   </tr>
                 </thead>
                 <tbody className={isFetching ? "opacity-50 transition-opacity" : ""}>
@@ -498,6 +529,7 @@ export function ServerEventsContent({
                     const service = getEventType(e.rawData, e.message, e.source);
                     const svcMeta = service ? SERVICE_META[service] : null;
                     const SvcIcon = svcMeta?.icon;
+                    const port = getEventPort(e.rawData);
                     return (
                       <tr
                         key={e.id}
@@ -588,7 +620,42 @@ export function ServerEventsContent({
                           )}
                         </Td>
                         <Td>
-                          <span className="text-xs">{e.message}</span>
+                          {port && (port.client !== null || port.server !== null) ? (
+                            <span
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-mono font-medium whitespace-nowrap ${
+                                port.isStandard
+                                  ? "bg-white/[0.04] border-[var(--border)] text-zinc-300"
+                                  : "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                              }`}
+                              title={
+                                port.server !== null && port.client !== null
+                                  ? `Client source: ${port.client} → Server dest: ${port.server}${port.isStandard ? "" : " (non-standard SSH port)"}`
+                                  : port.server !== null
+                                    ? `Server port: ${port.server}${port.isStandard ? "" : " (non-standard)"}`
+                                    : `Client source port: ${port.client}`
+                              }
+                            >
+                              {port.client !== null && (
+                                <>
+                                  <Hash className="h-3 w-3 opacity-60" />
+                                  {port.client}
+                                </>
+                              )}
+                              {port.client !== null && port.server !== null && (
+                                <ArrowRight className="h-3 w-3 opacity-50" />
+                              )}
+                              {port.server !== null && (
+                                <span className={port.isStandard ? "opacity-80" : "font-semibold"}>
+                                  {port.server}
+                                </span>
+                              )}
+                              {!port.isStandard && (
+                                <AlertTriangle className="h-3 w-3 ml-0.5" />
+                              )}
+                            </span>
+                          ) : (
+                            <Dash />
+                          )}
                         </Td>
                       </tr>
                     );
