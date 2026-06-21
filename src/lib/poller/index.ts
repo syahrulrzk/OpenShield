@@ -47,6 +47,7 @@ type AssetRow = {
   dbPort: number | null;
   dbName: string | null;
   dbUser: string | null;
+  monitorAllDatabases: boolean;
   pollerCursor: string | null;
   sshCredentials: { sshEncData: string | null } | null;
   dbCredentials: { dbEncData: string | null } | null;
@@ -99,6 +100,7 @@ export async function runPollerCycle(opts: {
       dbPort: true,
       dbName: true,
       dbUser: true,
+      monitorAllDatabases: true,
       pollerCursor: true,
       sshCredentials: { select: { sshEncData: true } },
       dbCredentials: { select: { dbEncData: true } },
@@ -226,6 +228,10 @@ export async function runPollerCycle(opts: {
               `\x1b[0m\n`
           );
         }
+        // Persist discovery cache if multi-DB mode returned it
+        const discoveredDbs = (
+          r.dbResult as DbPollResult & { discoveredDatabases?: string[] }
+        ).discoveredDatabases;
         await prisma.asset.update({
           where: { id: a.id },
           data: {
@@ -233,8 +239,17 @@ export async function runPollerCycle(opts: {
             pollerError: null,
             status: "ONLINE",
             lastSeenAt: new Date(),
+            ...(discoveredDbs !== undefined && {
+              discoveredDatabases: discoveredDbs,
+              lastDiscoveryAt: new Date(),
+            }),
           },
         });
+        if (discoveredDbs !== undefined) {
+          process.stdout.write(
+            `\x1b[36m[poll] db   ↳ discovered ${discoveredDbs.length} database(s) on ${a.hostname}: ${discoveredDbs.join(", ")}\x1b[0m\n`
+          );
+        }
       } else {
         failed++;
         const errMsg = r.dbResult.error ?? "Unknown DB error";
@@ -364,6 +379,7 @@ async function pollSingle(asset: any): Promise<{
         user: typed.dbUser ?? cred.user,
         password: cred.password,
         database,
+        monitorAllDatabases: typed.monitorAllDatabases ?? false,
       });
       return { asset: typed, dbResult: result };
     }

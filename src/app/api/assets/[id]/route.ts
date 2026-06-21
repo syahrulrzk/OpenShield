@@ -33,6 +33,8 @@ const patchSchema = z.object({
   location: z.string().trim().max(128).nullable().optional(),
   description: z.string().trim().max(512).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(),
+  // Opsi B: toggle multi-DB scan mode
+  monitorAllDatabases: z.boolean().optional(),
 });
 
 const deleteSchema = z.object({
@@ -76,6 +78,7 @@ export async function PATCH(
       location: true,
       description: true,
       tags: true,
+      monitorAllDatabases: true,
     },
   });
   if (!existing) {
@@ -105,6 +108,7 @@ export async function PATCH(
     "location",
     "description",
     "tags",
+    "monitorAllDatabases",
   ] as const) {
     if (k in data) {
       const oldV = (existing as Record<string, unknown>)[k];
@@ -116,9 +120,16 @@ export async function PATCH(
   }
 
   // Apply
+  // If toggling monitorAllDatabases, reset discovery cache so poller
+  // re-discovers on next cycle with new mode
+  const updateData: Record<string, unknown> = { ...data };
+  if ("monitorAllDatabases" in data) {
+    updateData.discoveredDatabases = null;
+    updateData.lastDiscoveryAt = null;
+  }
   const updated = await prisma.asset.update({
     where: { id },
-    data,
+    data: updateData,
     select: {
       id: true,
       displayName: true,
@@ -128,6 +139,8 @@ export async function PATCH(
       description: true,
       tags: true,
       status: true,
+      monitorAllDatabases: true,
+      discoveredDatabases: true,
     },
   });
 

@@ -50,6 +50,9 @@ export function AddAssetModal({
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [testConnection, setTestConnection] = useState(true);
+  // Opsi B: monitor all databases on this server
+  // When true, dbName becomes a "bootstrap" DB for discovery (e.g. "postgres")
+  const [monitorAllDatabases, setMonitorAllDatabases] = useState(false);
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("");
   const [tags, setTags] = useState("");
@@ -90,6 +93,7 @@ export function AddAssetModal({
         dbUser: dbUser.trim(),
         password,
         testConnection,
+        monitorAllDatabases,
         role: role.trim() || undefined,
         location: location.trim() || undefined,
         tags: tags
@@ -225,16 +229,58 @@ export function AddAssetModal({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Database name *" hint="Default DB to monitor">
+            <Field
+              label={monitorAllDatabases ? "Bootstrap DB *" : "Database name *"}
+              hint={
+                monitorAllDatabases
+                  ? "Used for discovery only. Leave as 'postgres' for PG, 'master' for MSSQL, 'mysql' for MySQL."
+                  : "Default DB to monitor"
+              }
+            >
               <input
                 type="text"
                 value={dbName}
                 onChange={(e) => setDbName(e.target.value)}
-                placeholder="app, postgres, master, …"
+                placeholder={
+                  dbType === "POSTGRES"
+                    ? "postgres"
+                    : dbType === "MYSQL"
+                    ? "mysql"
+                    : "master"
+                }
                 disabled={busy}
                 className="modal-input"
               />
             </Field>
+            <Field
+              label="Scan mode"
+              hint={monitorAllDatabases ? "Multi-DB (Opsi B)" : "Single DB"}
+            >
+              <label
+                className={`flex items-start gap-2 h-9 px-3 rounded-md border border-dashed cursor-pointer transition-colors ${
+                  monitorAllDatabases
+                    ? "border-violet-500/50 bg-violet-500/10"
+                    : "border-[var(--border)] bg-[var(--surface-2)]"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={monitorAllDatabases}
+                  onChange={(e) => setMonitorAllDatabases(e.target.checked)}
+                  disabled={busy}
+                  className="mt-1.5"
+                />
+                <div className="flex-1 leading-tight pt-1">
+                  <div className="text-[11px] font-medium text-zinc-200">
+                    Monitor all databases on this server
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    Scan all user DBs · auto-discover new ones
+                  </div>
+                </div>
+              </label>
+            </Field>
+          </div>
             <Field label="Username *" hint="Create with read-only grants">
               <input
                 type="text"
@@ -244,7 +290,6 @@ export function AddAssetModal({
                 className="modal-input"
               />
             </Field>
-          </div>
 
           <Field label="Password *" hint="Encrypted at rest with AES-256-GCM">
             <div className="relative">
@@ -318,7 +363,11 @@ export function AddAssetModal({
               className="rounded border-zinc-600 bg-zinc-800 text-[var(--primary)] focus:ring-[var(--primary)]"
             />
             Test connection before saving
-            <span className="text-zinc-600">(recommended)</span>
+            <span className="text-zinc-600">
+              {monitorAllDatabases
+                ? "(tests bootstrap DB + list-databases query)"
+                : "(recommended)"}
+            </span>
           </label>
 
           {/* Error */}

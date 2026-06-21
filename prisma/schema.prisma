@@ -105,6 +105,18 @@ model Asset {
   dbName String? @map("db_name")
   dbUser String? @map("db_user")
 
+  // ===== MULTI-DATABASE SCAN MODE =====
+  // Opsi B: instead of monitoring 1 DB, scan ALL user databases on this server
+  //   - When TRUE: dbName acts as a "bootstrap" DB for the discovery query
+  //     (postgres for PG, mysql for MySQL, master for MSSQL)
+  //   - Poller will: list databases → iterate per-DB → collect all events
+  //   - discoveredDatabases: cached list of DBs (refreshed each poll cycle)
+  //   - lastDiscoveryAt: when the list was last refreshed
+  // When FALSE: monitor only the single dbName (legacy behavior)
+  monitorAllDatabases Boolean   @default(false) @map("monitor_all_databases")
+  discoveredDatabases Json?     @map("discovered_databases")
+  lastDiscoveryAt     DateTime? @map("last_discovery_at")
+
   status     AssetStatus @default(PENDING)
   lastSeenAt DateTime?   @map("last_seen_at")
   createdAt  DateTime    @default(now()) @map("created_at")

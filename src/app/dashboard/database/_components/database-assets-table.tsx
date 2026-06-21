@@ -61,6 +61,9 @@ type Asset = {
   location?: string | null;
   description?: string | null;
   tags?: unknown;
+  monitorAllDatabases?: boolean;
+  discoveredDatabases?: string[] | null;
+  lastDiscoveryAt?: Date | string | null;
   _count: { dbEvents: number };
 };
 
@@ -363,11 +366,27 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                     </td>
                     {/* Type */}
                     <td className="px-3 py-2">
-                      <span
-                        className={`text-[11px] font-mono ${DB_TYPE_COLOR[a.dbType]}`}
-                      >
-                        {DB_TYPE_LABEL[a.dbType]}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`text-[11px] font-mono ${DB_TYPE_COLOR[a.dbType]}`}
+                        >
+                          {DB_TYPE_LABEL[a.dbType]}
+                        </span>
+                        {a.monitorAllDatabases && (
+                          <span
+                            className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30"
+                            title={`Scans all databases on server. Last discovered: ${
+                              a.discoveredDatabases?.length ?? 0
+                            } DB(s)${
+                              a.lastDiscoveryAt
+                                ? ` at ${new Date(a.lastDiscoveryAt).toLocaleString()}`
+                                : " (not yet discovered)"
+                            }`}
+                          >
+                            ALL
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* Host:Port */}
                     <td className="px-3 py-2 font-mono text-[11px] text-zinc-400 whitespace-nowrap">
@@ -376,9 +395,17 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                     {/* Database */}
                     <td
                       className="px-3 py-2 font-mono text-[11px] text-zinc-400 truncate max-w-[120px]"
-                      title={a.dbName ?? ""}
+                      title={
+                        a.monitorAllDatabases && a.discoveredDatabases
+                          ? `Discovered: ${a.discoveredDatabases.join(", ")}`
+                          : a.dbName ?? ""
+                      }
                     >
-                      {a.dbName ?? "—"}
+                      {a.monitorAllDatabases
+                        ? `${
+                            a.discoveredDatabases?.length ?? "?"
+                          } DBs`
+                        : a.dbName ?? "—"}
                     </td>
                     {/* User */}
                     <td
@@ -450,6 +477,8 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
             tags: Array.isArray(editTarget.tags)
               ? (editTarget.tags as string[])
               : [],
+            monitorAllDatabases: editTarget.monitorAllDatabases,
+            discoveredDatabases: editTarget.discoveredDatabases,
           }}
           onClose={() => setEditTarget(null)}
           onUpdated={() => {

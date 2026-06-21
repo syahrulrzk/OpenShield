@@ -5,6 +5,7 @@
  *
  * Editable fields:
  *   - displayName, environment, role, location, description, tags
+ *   - monitorAllDatabases (toggle Opsi B multi-DB scan)
  *
  * NOT editable here (to keep simple + secure):
  *   - hostname, dbType, dbHost, dbPort, dbName, dbUser, password
@@ -30,6 +31,8 @@ type AssetInput = {
   location: string | null;
   description: string | null;
   tags: string[];
+  monitorAllDatabases?: boolean;
+  discoveredDatabases?: string[] | null;
 };
 
 export function EditAssetModal({
@@ -51,6 +54,9 @@ export function EditAssetModal({
   const [tags, setTags] = useState(
     Array.isArray(asset.tags) ? asset.tags.join(", ") : ""
   );
+  const [monitorAllDatabases, setMonitorAllDatabases] = useState(
+    asset.monitorAllDatabases ?? false
+  );
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -69,6 +75,11 @@ export function EditAssetModal({
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
+        // Only include if it changed (avoids reset of discoveredDatabases
+        // when other fields are edited)
+        ...(monitorAllDatabases !== (asset.monitorAllDatabases ?? false) && {
+          monitorAllDatabases,
+        }),
       };
       if (displayName.trim() && displayName.trim() !== asset.displayName) {
         body.displayName = displayName.trim();
@@ -199,6 +210,41 @@ export function EditAssetModal({
               disabled={busy}
               className="modal-input"
             />
+          </Field>
+
+          <Field
+            label="Scan mode"
+            hint={
+              asset.discoveredDatabases && asset.discoveredDatabases.length > 0
+                ? `Currently scanning ${asset.discoveredDatabases.length} DB(s): ${asset.discoveredDatabases.slice(0, 3).join(", ")}${asset.discoveredDatabases.length > 3 ? "…" : ""}`
+                : "Opsi B: monitor all databases on this server"
+            }
+          >
+            <label
+              className={`flex items-start gap-2 h-9 px-3 rounded-md border border-dashed cursor-pointer transition-colors ${
+                monitorAllDatabases
+                  ? "border-violet-500/50 bg-violet-500/10"
+                  : "border-[var(--border)] bg-[var(--surface-2)]"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={monitorAllDatabases}
+                onChange={(e) => setMonitorAllDatabases(e.target.checked)}
+                disabled={busy}
+                className="mt-1.5"
+              />
+              <div className="flex-1 leading-tight pt-1">
+                <div className="text-[11px] font-medium text-zinc-200">
+                  Monitor all databases on this server
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  {monitorAllDatabases
+                    ? "Scan all user DBs · auto-discover new ones"
+                    : "Single database mode (only dbName is polled)"}
+                </div>
+              </div>
+            </label>
           </Field>
 
           <Field label="Description" hint="optional, max 512 chars">

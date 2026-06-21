@@ -50,6 +50,9 @@ const createSchema = z
     dbName: z.string().trim().min(1).max(64).optional(),
     dbUser: z.string().trim().min(1).max(64).optional(),
     password: z.string().min(1).max(512).optional(),
+    // Multi-DB scan mode: poll ALL user databases on the server
+    // When true, dbName is used as a "bootstrap" DB for discovery only
+    monitorAllDatabases: z.boolean().optional().default(false),
     // Required hostname (used for both SSH and DB; we generate dbName from displayName)
     hostname: z.string().trim().min(1).max(255).optional(),
     // Optional metadata
@@ -152,6 +155,7 @@ export async function POST(req: NextRequest) {
       user: data.dbUser!,
       password: data.password!,
       database: data.dbName!,
+      monitorAllDatabases: data.monitorAllDatabases,
     });
     if (!result.ok) {
       await audit({
@@ -217,6 +221,9 @@ export async function POST(req: NextRequest) {
         dbPort: data.category === "DATABASE" ? finalPort : null,
         dbName: data.dbName ?? null,
         dbUser: data.dbUser ?? null,
+        monitorAllDatabases: data.category === "DATABASE" && data.monitorAllDatabases
+          ? true
+          : false,
         // Start as PENDING — poller will set ONLINE after first successful poll
         status: "PENDING",
         ...(dbEncData
@@ -318,6 +325,9 @@ export async function GET(req: NextRequest) {
       dbName: true,
       dbUser: true,
       status: true,
+      monitorAllDatabases: true,
+      discoveredDatabases: true,
+      lastDiscoveryAt: true,
       tags: true,
       description: true,
       createdAt: true,

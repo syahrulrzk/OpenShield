@@ -129,6 +129,13 @@ export default async function DatabaseEventsPage({
           dbUser: true,
           status: true,
           createdAt: true,
+          role: true,
+          location: true,
+          description: true,
+          tags: true,
+          monitorAllDatabases: true,
+          discoveredDatabases: true,
+          lastDiscoveryAt: true,
           _count: { select: { dbEvents: true } },
         },
       }),
@@ -218,7 +225,12 @@ export default async function DatabaseEventsPage({
             Login attempts are polled from each asset below
           </p>
         </div>
-        <DatabaseAssetsTable assets={assets} />
+        <DatabaseAssetsTable assets={assets.map((a) => ({
+          ...a,
+          discoveredDatabases: Array.isArray(a.discoveredDatabases)
+            ? (a.discoveredDatabases as string[])
+            : null,
+        }))} />
       </section>
 
       {/* ────────────────────────────────────────────────────────── */}

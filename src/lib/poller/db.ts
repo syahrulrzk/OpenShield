@@ -9,6 +9,19 @@
  * Strategy: poll the "current activity" view — captures logins + active sessions.
  * Historical event tracking requires DB-side audit logs (out of scope for v1).
  *
+ * ## Multi-Database Scan Mode (Opsi B)
+ * When `monitorAllDatabases: true` is set on the Asset, this poller will:
+ *   1. Connect to a "bootstrap" DB (postgres / mysql / master) using
+ *      `dbName` as the initial connection target
+ *   2. Query the system catalog for ALL user databases
+ *   3. Iterate per-DB and capture sessions for each
+ *   4. Cache the discovered list in `Asset.discoveredDatabases` (JSON array)
+ *   5. Emit one DbEvent per (user, db) pair across all databases
+ *
+ * For SQL Server, sys.databases queries are scoped to the instance (no DB needed).
+ * For PostgreSQL, must have CONNECT privilege on each target DB.
+ * For MySQL, SHOW DATABASES requires the PROCESS privilege.
+ *
  * Auth: reads encrypted DB credentials from AssetCredential
  *
  * Note: For real audit logs (every query logged), the target DB needs
@@ -273,7 +286,12 @@ export async function pollDatabase(params: {
   user: string;
   password: string;
   database: string;
-}): Promise<DbPollResult> {
+  monitorAllDatabases?: boolean;
+}): Promise<DbPollResult & { discoveredDatabases?: string[] }> {
+  // Multi-DB scan mode: list databases first, then poll each
+  if (params.monitorAllDatabases) {
+    return pollAllDatabases(params);
+  }
   switch (params.dbType) {
     case "POSTGRES":
       return pollPostgres(params);
@@ -284,4 +302,147 @@ export async function pollDatabase(params: {
     default:
       return { ok: false, events: [], error: `Unknown dbType: ${params.dbType}` };
   }
+}
+
+// ============================================================
+// MULTI-DATABASE SCAN MODE (Opsi B)
+// ============================================================
+
+/**
+ * List all user databases on the server.
+ * Returns names suitable for connection (excludes templates, system DBs).
+ */
+async function listPostgresDatabases(client: PgClient): Promise<string[]> {
+  const r = await client.query<{ datname: string }>(`
+    SELECT datname FROM pg_database
+    WHERE datistemplate = false
+      AND datname NOT IN ('postgres')
+    ORDER BY datname
+  `);
+  return r.rows.map((row) => row.datname);
+}
+
+async function listMysqlDatabases(conn: mysql.Connection): Promise<string[]> {
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(
+    `SHOW DATABASES WHERE \`Database\` NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')`
+  );
+  return rows.map((r) => String(r.Database));
+}
+
+async function listSqlServerDatabases(
+  pool: sql.ConnectionPool
+): Promise<string[]> {
+  const result = await pool.request().query<{ name: string }>(
+    `SELECT name FROM sys.databases
+     WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')
+       AND state = 0
+     ORDER BY name`
+  );
+  return result.recordset.map((r) => r.name);
+}
+
+/**
+ * Multi-DB scan: discover databases on server, then poll each for sessions.
+ * Returns aggregated events + the discovered database list.
+ */
+async function pollAllDatabases(params: {
+  dbType: "POSTGRES" | "MYSQL" | "SQLSERVER";
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}): Promise<DbPollResult & { discoveredDatabases?: string[] }> {
+  const allEvents: DbEventInput[] = [];
+  let discovered: string[] = [];
+
+  // Phase 1: Connect to bootstrap DB and list databases
+  if (params.dbType === "POSTGRES") {
+    const client = new PgClient({
+      host: params.host,
+      port: params.port,
+      user: params.user,
+      password: params.password,
+      database: params.database || "postgres",
+      connectionTimeoutMillis: 10_000,
+    });
+    try {
+      await client.connect();
+      discovered = await listPostgresDatabases(client);
+    } catch (err) {
+      return {
+        ok: false,
+        events: [],
+        error: `PG discovery failed: ${(err as Error).message}`,
+      };
+    } finally {
+      try { await client.end(); } catch {}
+    }
+
+    // Phase 2: poll each discovered DB for sessions
+    for (const db of discovered) {
+      const r = await pollPostgres({ ...params, database: db });
+      if (r.ok) allEvents.push(...r.events);
+    }
+  } else if (params.dbType === "MYSQL") {
+    let conn: mysql.Connection | null = null;
+    try {
+      conn = await mysql.createConnection({
+        host: params.host,
+        port: params.port,
+        user: params.user,
+        password: params.password,
+        database: params.database || "mysql",
+        connectTimeout: 10_000,
+      });
+      discovered = await listMysqlDatabases(conn);
+    } catch (err) {
+      return {
+        ok: false,
+        events: [],
+        error: `MySQL discovery failed: ${(err as Error).message}`,
+      };
+    } finally {
+      if (conn) await conn.end().catch(() => {});
+    }
+
+    for (const db of discovered) {
+      const r = await pollMysql({ ...params, database: db });
+      if (r.ok) allEvents.push(...r.events);
+    }
+  } else if (params.dbType === "SQLSERVER") {
+    let pool: sql.ConnectionPool | null = null;
+    try {
+      pool = await sql.connect({
+        server: params.host,
+        port: params.port,
+        user: params.user,
+        password: params.password,
+        database: params.database || "master",
+        connectionTimeout: 10_000,
+        requestTimeout: 8_000,
+        options: { encrypt: true, trustServerCertificate: true },
+      });
+      discovered = await listSqlServerDatabases(pool);
+    } catch (err) {
+      return {
+        ok: false,
+        events: [],
+        error: `MSSQL discovery failed: ${(err as Error).message}`,
+      };
+    } finally {
+      if (pool) await pool.close().catch(() => {});
+    }
+
+    for (const db of discovered) {
+      const r = await pollSqlServer({ ...params, database: db });
+      if (r.ok) allEvents.push(...r.events);
+    }
+  }
+
+  return {
+    ok: true,
+    events: allEvents,
+    discoveredDatabases: discovered,
+  };
 }
