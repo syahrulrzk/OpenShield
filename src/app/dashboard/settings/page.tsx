@@ -31,6 +31,8 @@ export default async function SettingsPage() {
     alert_min_severity: "MEDIUM",
     webhook_enabled: false,
     webhook_url: "",
+    retention_low_days: 3,
+    retention_high_days: 40,
   };
   for (const s of settings) {
     try {

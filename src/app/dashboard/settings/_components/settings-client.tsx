@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Users,
@@ -45,6 +46,8 @@ type Settings = {
   alert_min_severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   webhook_enabled: boolean;
   webhook_url: string;
+  retention_low_days: number;
+  retention_high_days: number;
 };
 
 export function SettingsClient({
@@ -160,6 +163,40 @@ export function SettingsClient({
             </button>
           )}
         </div>
+
+        {/* Event Log Retention */}
+        {(isOwner || isAdmin) && (
+          <RetentionSection
+            lowDays={sysSettings.retention_low_days}
+            highDays={sysSettings.retention_high_days}
+            disabled={savingSettings}
+            onSave={async (low, high) => {
+              setSavingSettings(true);
+              try {
+                const r = await fetch("/api/admin/cleanup", {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ lowDays: low, highDays: high }),
+                });
+                if (!r.ok) {
+                  const d = await r.json().catch(() => ({}));
+                  toast.error(d.message || d.error || "Gagal save retention");
+                  return;
+                }
+                setSysSettings({
+                  ...sysSettings,
+                  retention_low_days: low,
+                  retention_high_days: high,
+                });
+                toast.success("Retention policy disimpan");
+              } catch {
+                toast.error("Network error");
+              } finally {
+                setSavingSettings(false);
+              }
+            }}
+          />
+        )}
 
         {showAddUser && (
           <AddUserForm
@@ -423,6 +460,147 @@ export function SettingsClient({
       {/* Mock Data / Test Tools — only visible to OWNER */}
       {isOwner && <MockDataSection />}
 
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+ * Retention Section — edit event log retention policy (inline)
+ * ------------------------------------------------------------------ */
+function RetentionSection({
+  lowDays,
+  highDays,
+  disabled,
+  onSave,
+}: {
+  lowDays: number;
+  highDays: number;
+  disabled: boolean;
+  onSave: (low: number, high: number) => Promise<void>;
+}) {
+  const [low, setLow] = useState(lowDays);
+  const [high, setHigh] = useState(highDays);
+  const [saving, setSaving] = useState(false);
+
+  const dirty = low !== lowDays || high !== highDays;
+  const valid =
+    Number.isInteger(low) &&
+    Number.isInteger(high) &&
+    low >= 1 &&
+    low <= 365 &&
+    high >= 1 &&
+    high <= 365 &&
+    low <= high;
+
+  const handle = async () => {
+    if (!valid) return;
+    setSaving(true);
+    try {
+      await onSave(low, high);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] mt-4">
+      <div className="p-5 border-b border-[var(--border)]">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-lg bg-white/[0.04] border border-[var(--border)] flex items-center justify-center shrink-0">
+            <Database className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Event Log Retention</h2>
+              <Link
+                href="/dashboard/admin/cleanup"
+                className="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] underline-offset-2 hover:underline"
+                title="Open full cleanup admin"
+              >
+                Full admin →
+              </Link>
+            </div>
+            <p className="text-xs text-[var(--muted-foreground)] mt-0.5">
+              Berapa lama event log disimpan sebelum auto-dihapus oleh systemd
+              timer (nightly 03:17 WIB).
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-xs font-medium text-[var(--foreground)] mb-1.5">
+            Low Retention
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={low}
+              onChange={(e) => setLow(parseInt(e.target.value) || 1)}
+              disabled={disabled || saving}
+              className="w-20 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm font-mono focus:border-[var(--foreground)] focus:outline-none disabled:opacity-50"
+            />
+            <span className="text-xs text-[var(--muted-foreground)]">hari</span>
+          </div>
+          <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">
+            Untuk: <span className="font-mono">syslog</span>,{" "}
+            <span className="font-mono">fim</span>,{" "}
+            <span className="font-mono">auditd</span>
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-[var(--foreground)] mb-1.5">
+            High Retention
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={high}
+              onChange={(e) => setHigh(parseInt(e.target.value) || 1)}
+              disabled={disabled || saving}
+              className="w-20 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm font-mono focus:border-[var(--foreground)] focus:outline-none disabled:opacity-50"
+            />
+            <span className="text-xs text-[var(--muted-foreground)]">hari</span>
+          </div>
+          <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">
+            Untuk: <span className="font-mono">server_auth</span>,{" "}
+            <span className="font-mono">apps</span>,{" "}
+            <span className="font-mono">database</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="px-5 pb-5 flex items-center gap-3">
+        <button
+          onClick={handle}
+          disabled={!dirty || !valid || saving || disabled}
+          className="px-3 py-1.5 rounded-lg bg-[var(--foreground)] text-[var(--background)] text-xs font-medium hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity flex items-center gap-2"
+        >
+          {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+          Save retention
+        </button>
+        {dirty && valid && (
+          <span className="text-[11px] text-amber-400">Unsaved</span>
+        )}
+        {!valid && (
+          <span className="text-[11px] text-amber-400 flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" />
+            Low harus ≤ high (1-365 hari)
+          </span>
+        )}
+        <Link
+          href="/dashboard/admin/cleanup"
+          className="ml-auto text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+        >
+          View run history →
+        </Link>
+      </div>
     </div>
   );
 }
