@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
 import { CheckCircle2, XCircle, Database, ShieldOff, Clock, Search, X } from "lucide-react";
 import { DatabaseHeader } from "./_components/database-header";
+import { DatabaseAssetsPanel } from "./_components/database-assets-panel";
 import { subHours, subDays } from "date-fns";
 import Link from "next/link";
 import type { AssetCategory, DbType, DbEventStatus } from "@prisma/client";
@@ -81,7 +82,7 @@ export default async function DatabaseEventsPage({
     asset: { userId: session.userId, category: "DATABASE" as AssetCategory },
     eventTime: { gte: since },
   };
-  const [events, total, successCount, failedCount, deniedCount, dbTypeCounts, envCounts] =
+  const [events, total, successCount, failedCount, deniedCount, dbTypeCounts, envCounts, assets] =
     await Promise.all([
       prisma.dbEvent.findMany({
         where,
@@ -112,6 +113,24 @@ export default async function DatabaseEventsPage({
         by: ["environment"],
         where: { userId: session.userId, category: "DATABASE" },
         _count: { _all: true },
+      }),
+      prisma.asset.findMany({
+        where: { userId: session.userId, category: "DATABASE" },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          displayName: true,
+          hostname: true,
+          environment: true,
+          dbType: true,
+          dbHost: true,
+          dbPort: true,
+          dbName: true,
+          dbUser: true,
+          status: true,
+          createdAt: true,
+          _count: { select: { dbEvents: true } },
+        },
       }),
     ]);
 
@@ -208,6 +227,9 @@ export default async function DatabaseEventsPage({
           <div className="mt-1 text-2xl font-semibold font-mono text-[var(--warning)]">{deniedCount}</div>
         </div>
       </div>
+
+      {/* Assets panel — monitored databases */}
+      <DatabaseAssetsPanel assets={assets} />
 
       {/* Filters — single row (wraps on mobile) */}
       <div className="flex flex-wrap items-center gap-2">
