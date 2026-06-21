@@ -31,6 +31,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Database,
   ChevronUp,
@@ -38,7 +39,11 @@ import {
   ChevronsUpDown,
   ExternalLink,
   Plus,
+  Pencil,
+  Trash2,
 } from "lucide-react";
+import { EditAssetModal } from "./edit-asset-modal";
+import { DeleteAssetModal } from "./delete-asset-modal";
 
 type Asset = {
   id: string;
@@ -52,6 +57,10 @@ type Asset = {
   dbUser: string | null;
   status: "PENDING" | "ONLINE" | "OFFLINE" | "ERROR";
   createdAt: Date | string;
+  role?: string | null;
+  location?: string | null;
+  description?: string | null;
+  tags?: unknown;
   _count: { dbEvents: number };
 };
 
@@ -89,9 +98,14 @@ const ENV_BADGE: Record<string, string> = {
 };
 
 export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
+  const router = useRouter();
   const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [localSearch, setLocalSearch] = useState("");
+  const [editTarget, setEditTarget] = useState<Asset | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Asset | null>(null);
+
+  const refresh = () => router.refresh();
 
   // Sort + filter
   const sorted = useMemo(() => {
@@ -275,13 +289,16 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
               <th className="px-3 py-2 font-medium">
                 <SortHeader k="created">Added</SortHeader>
               </th>
+              <th className="px-3 py-2 font-medium text-zinc-400 w-20 text-right">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody>
             {sorted.length === 0 ? (
               <tr>
                 <td
-                  colSpan={9}
+                  colSpan={10}
                   className="px-3 py-6 text-center text-xs text-[var(--muted-foreground)]"
                 >
                   No assets match "{localSearch}"
@@ -386,6 +403,33 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                     <td className="px-3 py-2 text-[10px] text-zinc-500 whitespace-nowrap">
                       {relTime(a.createdAt)}
                     </td>
+                    {/* Actions */}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditTarget(a);
+                          }}
+                          className="h-6 w-6 rounded flex items-center justify-center text-zinc-500 hover:text-violet-300 hover:bg-violet-500/10 transition-colors"
+                          title="Edit asset metadata"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget(a);
+                          }}
+                          className="h-6 w-6 rounded flex items-center justify-center text-zinc-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                          title="Delete asset"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })
@@ -393,6 +437,45 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
           </tbody>
         </table>
       </div>
+
+      {editTarget && (
+        <EditAssetModal
+          asset={{
+            id: editTarget.id,
+            displayName: editTarget.displayName,
+            environment: editTarget.environment,
+            role: editTarget.role ?? null,
+            location: editTarget.location ?? null,
+            description: editTarget.description ?? null,
+            tags: Array.isArray(editTarget.tags)
+              ? (editTarget.tags as string[])
+              : [],
+          }}
+          onClose={() => setEditTarget(null)}
+          onUpdated={() => {
+            setEditTarget(null);
+            refresh();
+          }}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteAssetModal
+          asset={{
+            id: deleteTarget.id,
+            displayName: deleteTarget.displayName,
+            hostname: deleteTarget.hostname,
+            environment: deleteTarget.environment,
+            dbType: deleteTarget.dbType,
+            eventCount: deleteTarget._count.dbEvents,
+          }}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => {
+            setDeleteTarget(null);
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
