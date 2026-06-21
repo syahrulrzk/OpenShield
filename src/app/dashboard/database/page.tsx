@@ -403,9 +403,20 @@ export default async function DatabaseEventsPage({
                       <td className="px-4 py-3 text-center text-xs font-mono text-[var(--muted-foreground)] whitespace-nowrap">
                         <div className="flex items-center gap-1.5 justify-center">
                           <Clock className="h-3 w-3 opacity-50" />
-                          {new Date(e.eventTime).toLocaleString("id-ID", {
-                            day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-                          })}
+                          {(() => {
+                            // SSR-safe deterministic formatter: ISO date + HH:mm
+                            // Avoid `toLocaleString("id-ID", ...)` because
+                            // ICU data can differ between server builds and
+                            // any client-rendered preview, causing hydration
+                            // mismatch warnings.
+                            const d = new Date(e.eventTime);
+                            const dd = String(d.getUTCDate()).padStart(2, "0");
+                            const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                            const mon = months[d.getUTCMonth()];
+                            const hh = String(d.getUTCHours()).padStart(2, "0");
+                            const mm = String(d.getUTCMinutes()).padStart(2, "0");
+                            return `${dd} ${mon} ${hh}:${mm} UTC`;
+                          })()}
                           {e.count > 1 && (
                             <span
                               className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"

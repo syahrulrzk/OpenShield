@@ -29,7 +29,7 @@
  *   - Status updates with color dots (ONLINE/OFFLINE/PENDING/ERROR)
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -234,10 +234,35 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
     );
   }
 
-  // Relative time formatter (e.g. "2h ago", "5d ago")
+  // Hydration-safe date formatters.
+  // SSR Date.now() differs from client Date.now() by a few ms, so any
+  // relative-time or locale-formatted string risks hydration mismatch.
+  // Strategy: use absolute ISO for SSR (deterministic), enhance to relative
+  // after mount via useEffect.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    // Re-render every 60s so relative time stays fresh
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Absolute date (SSR + initial client render — deterministic)
+  const formatDateTime = (d: Date | string): string => {
+    const date = typeof d === "string" ? new Date(d) : d;
+    // ISO 8601 without milliseconds, UTC: "2026-06-21 13:41:08 UTC"
+    return `${date.toISOString().replace("T", " ").slice(0, 19)} UTC`;
+  };
+
+  // Relative time: only meaningful after mount (when `now` is set)
+  // During SSR + initial render, returns absolute date (deterministic)
   const relTime = (d: Date | string): string => {
     const date = typeof d === "string" ? new Date(d) : d;
-    const diff = Date.now() - date.getTime();
+    if (now === null) {
+      // Pre-mount: return absolute date to match SSR output
+      return date.toISOString().slice(0, 10);
+    }
+    const diff = now - date.getTime();
     const min = 60_000;
     const hr = 60 * min;
     const day = 24 * hr;
@@ -379,7 +404,7 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                               a.discoveredDatabases?.length ?? 0
                             } DB(s)${
                               a.lastDiscoveryAt
-                                ? ` at ${new Date(a.lastDiscoveryAt).toLocaleString()}`
+                                ? ` at ${formatDateTime(a.lastDiscoveryAt)}`
                                 : " (not yet discovered)"
                             }`}
                           >
