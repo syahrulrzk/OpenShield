@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -346,7 +346,96 @@ class SshdParser:
       - ERROR:   failed authentications, invalid users, disconnects
       - INFO:    successful sessions, session opens/closes
       - WARN:    protocol errors, malformed input
+
+    The server-side destination port (sshd listen port) is detected at
+    init time via `sshd -T` (preferred, gets effective config) with a
+    fallback to scanning /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/*.conf.
+    If detection fails entirely, defaults to 22 (the IANA-registered SSH port).
+    Detected port is attached to every event as raw_data.serverPort so the
+    dashboard shows the correct port even when the log line itself doesn't
+    carry the server-side port (only client source port is in the log).
     """
+
+    @staticmethod
+    def detect_sshd_port(log: Optional[logging.Logger] = None) -> int:
+        """
+        Detect the SSH daemon listen port on this host.
+
+        Strategy (in order):
+        1. `sshd -T` — sshd's own effective-config dump (most accurate,
+           resolves Match blocks, includes, drop-ins). Requires /usr/sbin/sshd
+           to be readable+executable by the agent process.
+        2. Scan /etc/ssh/sshd_config + /etc/ssh/sshd_config.d/*.conf for
+           `Port N` directives. Uses the FIRST explicit Port line; later
+           lines are silently ignored by sshd.
+        3. Default to 22.
+
+        Returns: detected port number (1-65535), or 22 on any failure.
+        Never raises — all exceptions are caught and logged at DEBUG.
+        """
+        # 1. sshd -T (most reliable)
+        try:
+            import subprocess
+            sshd_paths = ("/usr/sbin/sshd", "/sbin/sshd", "sshd")
+            sshd_bin = next((p for p in sshd_paths if os.path.isabs(p) and os.access(p, os.X_OK)) or ("sshd",))
+            out = subprocess.run(
+                [sshd_bin, "-T"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if out.returncode == 0:
+                for line in out.stdout.splitlines():
+                    line = line.strip().lower()
+                    if line.startswith("port "):
+                        port = int(line.split()[1])
+                        if 1 <= port <= 65535:
+                            if log:
+                                log.debug("SshdParser: detected SSH port %d via `sshd -T`", port)
+                            return port
+        except Exception as e:
+            if log:
+                log.debug("SshdParser: `sshd -T` failed (%s), falling back to config scan", e)
+
+        # 2. Scan sshd_config + drop-ins
+        try:
+            import glob as _glob
+            paths = ["/etc/ssh/sshd_config"] + sorted(_glob.glob("/etc/ssh/sshd_config.d/*.conf"))
+            for path in paths:
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            s = line.strip()
+                            if not s or s.startswith("#"):
+                                continue
+                            m = re.match(r"^[Pp]ort\s+(\d+)", s)
+                            if m:
+                                port = int(m.group(1))
+                                if 1 <= port <= 65535:
+                                    if log:
+                                        log.debug("SshdParser: detected SSH port %d from %s", port, path)
+                                    return port
+                except (FileNotFoundError, PermissionError):
+                    continue
+        except Exception as e:
+            if log:
+                log.debug("SshdParser: config scan failed (%s), falling back to 22", e)
+
+        # 3. Default
+        if log:
+            log.debug("SshdParser: no SSH port detected, defaulting to 22")
+        return 22
+
+    def __init__(self, sshd_port: int = 22):
+        """
+        :param sshd_port: SSH daemon listen port detected at agent startup.
+                          Used as default `serverPort` for events whose log
+                          lines don't carry the server-side port explicitly.
+                          For sshd.connection events (which DO have it in
+                          the log), the explicit value wins.
+        """
+        self.sshd_port = sshd_port
 
     # "Failed password for invalid user testuser from 10.0.0.5 port 51234 ssh2"
     # "Failed password for gm from 10.0.0.5 port 51234 ssh2"
@@ -433,7 +522,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral, random per conn)
-                    "serverPort": 22,        # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "parser": "sshd",
                 },
             }
@@ -449,6 +538,7 @@ class SshdParser:
                     "event": "sshd.invalid_user",
                     "user": user,
                     "ip": ip,
+                    "serverPort": self.sshd_port,  # SSH server port (implicit; not in log line)
                     "parser": "sshd",
                 },
             }
@@ -464,7 +554,8 @@ class SshdParser:
                     "event": "sshd.accepted",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": self.sshd_port,  # SSH server port (detected at agent init)
                     "parser": "sshd",
                 },
             }
@@ -480,7 +571,8 @@ class SshdParser:
                     "event": "sshd.max_auth",
                     "user": user,
                     "ip": ip,
-                    "port": int(port),
+                    "port": int(port),       # client source port (ephemeral, random per conn)
+                    "serverPort": self.sshd_port,  # SSH server port (detected at agent init)
                     "parser": "sshd",
                 },
             }
@@ -495,6 +587,7 @@ class SshdParser:
                 "raw_data": {
                     "event": "sshd.no_ident",
                     "ip": ip,
+                    "serverPort": self.sshd_port,  # SSH server port (implicit; not in log line)
                     "parser": "sshd",
                 },
             }
@@ -511,7 +604,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port) if port else None,
-                    "serverPort": 22,       # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "parser": "sshd",
                 },
             }
@@ -528,7 +621,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral, random per conn)
-                    "serverPort": 22,        # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "service": "SFTP",
                     "parser": "sshd",
                 },
@@ -546,7 +639,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral, random per conn)
-                    "serverPort": 22,        # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "service": "SFTP",
                     "parser": "sshd",
                 },
@@ -564,7 +657,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral, random per conn)
-                    "serverPort": 22,        # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "service": "SCP",
                     "parser": "sshd",
                 },
@@ -582,7 +675,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral, random per conn)
-                    "serverPort": 22,        # SSH server port (implicit in auth.log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
                     "tty": tty,
                     "service": "SSH",
                     "parser": "sshd",
@@ -606,7 +699,7 @@ class SshdParser:
                     "user": user,
                     "ip": ip,
                     "port": int(port),       # client source port (ephemeral)
-                    "serverPort": 22,       # SSH server port (implicit in log)
+                    "serverPort": self.sshd_port,  # SSH server port (implicit in log)
                     "command": cmd_short,
                     "service": "SSH",
                     "parser": "sshd",
@@ -696,6 +789,11 @@ class LogTailer:
         self.offsets_path = os.path.join(state_dir, "log_offsets.json")
         self.offsets: Dict[str, int] = {}
         self.inodes: Dict[str, int] = {}
+        # Detect SSH server port ONCE at agent startup (used by SshdParser
+        # for events where the log line doesn't carry the server-side port).
+        # Detection only matters if any watcher uses the sshd parser.
+        self.sshd_port = SshdParser.detect_sshd_port(log)
+        self.log.info(f"OpenShield: SSH daemon listen port detected as {self.sshd_port}")
         # Build list of (path, parser_instance) — skip unknown parsers
         self.targets: List[Tuple[str, Any]] = []
         for w in watchers or []:
@@ -706,7 +804,10 @@ class LogTailer:
             if parser_name not in PARSERS:
                 self.log.warning(f"Unknown parser '{parser_name}' for {path}, skipping")
                 continue
-            self.targets.append((path, PARSERS[parser_name]()))
+            if parser_name == "sshd":
+                self.targets.append((path, PARSERS[parser_name](sshd_port=self.sshd_port)))
+            else:
+                self.targets.append((path, PARSERS[parser_name]()))
         self._load_state()
 
     def _load_state(self) -> None:
