@@ -7,27 +7,30 @@ services:
     ports:
       - "3001:3000"
     environment:
+      # ALL secrets below MUST be set in .env (never commit .env).
+      # See .env.example for required variables and how to generate them.
       NODE_ENV: production
       APP_VERSION: "0.1.0"
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-      POSTGRES_USER: openshield
-      POSTGRES_PASSWORD: "9e81dc2b4b4022eb159a27f21d3f5bea"
-      REDIS_PASSWORD: "d050381642df1153c32bcf4f2ec2d251"
-      SESSION_SECRET: "2d2747eb2b320b37e42b5f314513a9f1821a89e2eaa3401d405e438fdd4c2d05"
-      ENCRYPTION_KEY: "70cfdc838610a7b25261209823e9a404e3847d798ea3b38d7a54c7f74b03e22b"
-      PUBLIC_URL: "http://localhost:3001"
-      CORS_ORIGINS: ""
-      LOGIN_RATE_LIMIT: "5"
-      COOKIE_SECURE: "false"
-      DATABASE_URL: "postgresql://openshield:9e81dc2b4b4022eb159a27f21d3f5bea@postgres:5432/openshield?schema=public"
-      REDIS_URL: "redis://:d050381642df1153c32bcf4f2ec2d251@redis:6379"
+      POSTGRES_USER: ${POSTGRES_USER:-openshield}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-openshield}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set in .env}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3001}
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      LOGIN_RATE_LIMIT: "${LOGIN_RATE_LIMIT:-5}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-openshield}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-openshield}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       # Poller
-      INGEST_HMAC_SECRET: "${INGEST_HMAC_SECRET:-os_ingest_3b2a1c9d8e7f6543210fedcba9876543210abcdef1234567890fedcba}"
+      INGEST_HMAC_SECRET: ${INGEST_HMAC_SECRET:?INGEST_HMAC_SECRET must be set in .env}
       POLLER_INTERVAL_SECONDS: "${POLLER_INTERVAL_SECONDS:-30}"
       POLLER_ENABLED: "${POLLER_ENABLED:-true}"
       OPENSHIELD_BASE_URL: "http://127.0.0.1:3000"
-      OPENSHIELD_PUBLIC_URL: "${OPENSHIELD_PUBLIC_URL:-http://172.16.19.235:3001}"
+      OPENSHIELD_PUBLIC_URL: ${OPENSHIELD_PUBLIC_URL:-http://localhost:3001}
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,11 +48,25 @@ services:
     image: postgres:16-alpine
     container_name: openshield-postgres
     ports:
-      - "127.0.0.1:5433:5432"
+      # Expose publicly for Navicat / pgAdmin access.
+      # Bind to all interfaces (0.0.0.0) so external clients can connect via
+      # the host's IP. pg_hba.conf inside container still requires password
+      # auth — see init/02-pg_hba_remote.sh for the allow rule.
+      # SECURITY: For production, restrict to specific IPs via firewall
+      # (ufw allow from <trusted-ip> to any port 5433) instead of 0.0.0.0.
+      - "0.0.0.0:5433:5432"
     environment:
-      POSTGRES_USER: openshield
-      POSTGRES_PASSWORD: "9e81dc2b4b4022eb159a27f21d3f5bea"
-      POSTGRES_DB: openshield
+      POSTGRES_USER: ${POSTGRES_USER:-openshield}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-openshield}
+      # Listen on all interfaces (default is localhost-only)
+      POSTGRES_INITDB_ARGS: ""
+    command:
+      - "postgres"
+      - "-c"
+      - "listen_addresses=*"
+      - "-c"
+      - "port=5432"
     volumes:
       - openshield-postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -73,7 +90,7 @@ services:
         cat /etc/redis.conf
         redis-server /etc/redis.conf --appendonly yes
     environment:
-      REDIS_PASSWORD: "d050381642df1153c32bcf4f2ec2d251"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     volumes:
       - openshield-redis-data:/data
     healthcheck:

@@ -1,0 +1,28 @@
+-- Allow remote connections from any IP for the openshield user.
+-- This is the FIRST init script (alphabetically) so it runs before
+-- the user's existing 01-extensions.sql. Actually wait — since file
+-- naming is 02-, it runs after 01-extensions.sql. That's fine.
+--
+-- Production security: Replace 0.0.0.0/0 with the specific subnet of
+-- your admin workstation (e.g., 172.16.19.0/24) and add a firewall
+-- rule: `ufw allow from 172.16.19.0/24 to any port 5433`.
+--
+-- pg_hba.conf format:
+--   TYPE  DATABASE  USER       ADDRESS    METHOD  [OPTIONS]
+--
+-- "host" = TCP/IP connection (vs "local" = Unix socket)
+-- "all"  = any database
+-- "0.0.0.0/0" = any IPv4 source
+-- "scram-sha-256" = strong password auth (Postgres 10+)
+--
+-- This gets injected into pg_hba.conf via the postgres entrypoint,
+-- which automatically appends custom rules. The default postgres
+-- config already includes "host all all all scram-sha-256" for
+-- Postgres 15+, but we make it explicit here for older versions.
+
+-- (No SQL needed — pg_hba.conf is text-based, not SQL.
+--  This file is just a marker. The actual pg_hba rules are set
+--  via the entrypoint's POSTGRES_HOST_AUTH_METHOD env var.)
+
+-- Use trust for passwordless dev? No — we want password auth.
+-- Set via env: POSTGRES_HOST_AUTH_METHOD=scram-sha-256 (default in pg 15+)
