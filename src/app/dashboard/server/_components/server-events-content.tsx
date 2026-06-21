@@ -12,7 +12,7 @@
  *   - URL remains source of truth → shareable / back-button friendly
  */
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -29,7 +29,7 @@ import {
   Hash,
   Info,
   Loader2,
-  Network,
+  RefreshCw,
   Search,
   Server,
   Shield,
@@ -259,7 +259,15 @@ export function ServerEventsContent({
     return () => clearTimeout(handle);
   }, [qInput, sp, router, pathname]);
 
-  // ── fetch on URL change ───────────────────────────────────────────────────
+  const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
+  const [, setTick] = useState(0); // re-render trigger for "Xs ago" label
+
+  // Extract fetch so the manual Refresh button can re-trigger it.
+  // Bumps a `nonce` state to force re-run even when URL params are unchanged.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const manualRefresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
+
+  // ── fetch on URL change OR manual refresh ──────────────────────────
   useEffect(() => {
     let cancelled = false;
     const fetchData = async () => {
@@ -271,7 +279,10 @@ export function ServerEventsContent({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: ServerEventsData = await res.json();
-        if (!cancelled) setData(json);
+        if (!cancelled) {
+          setData(json);
+          setLastRefreshed(Date.now());
+        }
       } catch (err: any) {
         if (!cancelled) setError(err?.message || "Failed to load events");
       } finally {
@@ -282,7 +293,13 @@ export function ServerEventsContent({
     return () => {
       cancelled = true;
     };
-  }, [sp]);
+  }, [sp, refreshNonce]);
+
+  // Tick every 1s to keep "Xs ago" label fresh
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // ── status dropdown options (derived from data) ───────────────────────────
   const statusOptions: DropdownOption[] = useMemo(
@@ -456,6 +473,29 @@ export function ServerEventsContent({
             Clear
           </Link>
         )}
+        {/* ── Manual refresh button ────────────────────────────────────── */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={manualRefresh}
+            disabled={isFetching}
+            className="h-9 px-2.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-white/[0.04] flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-wait transition-colors"
+            title={
+              isFetching
+                ? "Refreshing\u2026"
+                : lastRefreshed
+                  ? `Refresh (last updated ${Math.max(1, Math.round((Date.now() - lastRefreshed) / 1000))}s ago)`
+                  : "Refresh events"
+            }
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+          </button>
+          {lastRefreshed && !isFetching && (
+            <span className="text-[10px] font-mono text-zinc-600 tabular-nums">
+              {Math.max(1, Math.round((Date.now() - lastRefreshed) / 1000))}s ago
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── Search hint ─────────────────────────────────────────────── */}

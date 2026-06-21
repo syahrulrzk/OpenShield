@@ -344,22 +344,40 @@ export function AgentsSection() {
     }
   };
 
-  const load = useCallback(async () => {
+  const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setTick] = useState(0); // re-render trigger for "Xs ago" label
+
+  const load = useCallback(async (showErrors = false) => {
+    setIsRefreshing(true);
     try {
       const r = await fetch("/api/agents", { credentials: "include" });
       const data = await r.json();
-      if (data.ok) setAgents(data.agents);
+      if (!r.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${r.status}`);
+      }
+      setAgents(data.agents);
+      setLastRefreshed(Date.now());
     } catch (e) {
       console.error(e);
+      if (showErrors) {
+        toast.error(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    const t = setInterval(() => load(false), 15000);
+    // Re-render every 1s so the "Xs ago" label stays current
+    const tick = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => {
+      clearInterval(t);
+      clearInterval(tick);
+    };
   }, [load]);
 
   const [revokeTarget, setRevokeTarget] = useState<Agent | null>(null);
@@ -460,14 +478,26 @@ export function AgentsSection() {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
           <button
-            onClick={load}
-            className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400"
-            title="Refresh"
+            onClick={() => load(true)}
+            disabled={isRefreshing}
+            className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 disabled:opacity-60 disabled:cursor-wait"
+            title={
+              isRefreshing
+                ? "Refreshing\u2026"
+                : lastRefreshed
+                  ? `Refresh (last updated ${Math.max(1, Math.round((Date.now() - lastRefreshed) / 1000))}s ago)`
+                  : "Refresh agents list"
+            }
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
           </button>
+          {lastRefreshed && !isRefreshing && (
+            <span className="text-[10px] font-mono text-zinc-600 tabular-nums">
+              {Math.max(1, Math.round((Date.now() - lastRefreshed) / 1000))}s ago
+            </span>
+          )}
 
           {/* Download bundle dropdown */}
           <div className="relative">
