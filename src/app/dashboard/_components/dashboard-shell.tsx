@@ -22,6 +22,7 @@ import {
   Radar,
   User,
   ScrollText,
+  Trash2,
   Eye,
   FileLock,
 } from "lucide-react";
@@ -123,6 +124,7 @@ const navGroups: NavGroup[] = [
     requiresRole: ["OWNER", "ADMIN"] as const,
     items: [
       { href: "/dashboard/settings", label: "Settings", icon: Settings },
+      { href: "/dashboard/admin/cleanup", label: "Event Log Cleanup", icon: Trash2 },
     ],
   },
   {

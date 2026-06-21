@@ -50,7 +50,10 @@ export type AuditAction =
   | "agent.bundle.downloaded"
   | "agent.deleted"
   | "agent.install_script.generated"
-  | "events.deleted";
+  | "events.deleted"
+  | "eventlog.cleanup"
+  | "eventlog.cleanup.manual"
+  | "eventlog.retention.update";
 
 export type AuditInput = {
   userId?: string | null;
