@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
 import { CheckCircle2, XCircle, Database, ShieldOff, Clock, Search, X } from "lucide-react";
+import { DatabaseHeader } from "./_components/database-header";
 import { subHours, subDays } from "date-fns";
 import Link from "next/link";
 import type { AssetCategory, DbType, DbEventStatus } from "@prisma/client";
@@ -180,22 +181,7 @@ export default async function DatabaseEventsPage({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Database Events
-          </h1>
-          <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            Login attempts across all monitored databases
-          </p>
-        </div>
-        <Link
-          href="/dashboard/server"
-          className="text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-        >
-          ← SSH Events
-        </Link>
-      </div>
+      <DatabaseHeader />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
