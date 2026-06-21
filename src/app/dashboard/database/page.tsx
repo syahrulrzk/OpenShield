@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/security/rbac";
 import { CheckCircle2, XCircle, Database, ShieldOff, Clock, Search, X, Server, Activity } from "lucide-react";
 import { DatabaseHeader } from "./_components/database-header";
-import { DatabaseAssetsPanel } from "./_components/database-assets-panel";
+import { DatabaseAssetsTable } from "./_components/database-assets-table";
 import { subHours, subDays } from "date-fns";
 import Link from "next/link";
 import type { AssetCategory, DbType, DbEventStatus } from "@prisma/client";
@@ -218,7 +218,7 @@ export default async function DatabaseEventsPage({
             Login attempts are polled from each asset below
           </p>
         </div>
-        <DatabaseAssetsPanel assets={assets} />
+        <DatabaseAssetsTable assets={assets} />
       </section>
 
       {/* ────────────────────────────────────────────────────────── */}
