@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -381,9 +381,12 @@ class SshdParser:
     RE_SFTP_SUBSYS = re.compile(
         r"Starting session: subsystem 'internal-sftp' for (\S+) from ([\d.]+) port (\d+)"
     )
-    # "Starting session: subsystem 'scp' for rizki from 1.2.3.4 port 22 id 0"
+    # SCP over SSH comes in two flavors:
+    #   Legacy: "Starting session: subsystem 'scp' for rizki from 1.2.3.4 port 22 id 0"
+    #   Modern (OpenSSH 9.0+): "Starting session: command scp -t /tmp for rizki from 1.2.3.4 port 22 id 1"
+    # Both must classify as sshd.scp_session for proper audit.
     RE_SCP_SESSION = re.compile(
-        r"Starting session: subsystem 'scp' for (\S+) from ([\d.]+) port (\d+)"
+        r"Starting session: (?:subsystem 'scp'|command scp(?:\s+\S+)*?) for (\S+) from ([\d.]+) port (\d+)"
     )
     # "Starting session: shell on pts/1 for linux from 10.1.1.100 port 49942 id 0"
     # Generic shell session — PuTTY/terminal/macOS Terminal/iTerm login.
