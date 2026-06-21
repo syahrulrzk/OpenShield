@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -385,6 +385,21 @@ class SshdParser:
     RE_SCP_SESSION = re.compile(
         r"Starting session: subsystem 'scp' for (\S+) from ([\d.]+) port (\d+)"
     )
+    # "Starting session: shell on pts/1 for linux from 10.1.1.100 port 49942 id 0"
+    # Generic shell session — PuTTY/terminal/macOS Terminal/iTerm login.
+    # tty is like "pts/1", "tty/1", or "0" for console.
+    RE_SHELL_SESSION = re.compile(
+        r"Starting session: shell (?:on (\S+) )?for (\S+) from ([\d.]+) port (\d+)"
+    )
+    # "Starting session: command sh -c 'uname -a' for linux from 10.1.1.100 port 22 id 1"
+    # Also matches the bare form `Starting session: command for user from ... id N`
+    # (sshd emits this when the session is a child fork without an exec payload,
+    # e.g. WinSCP's `scp -t /path` wrapper logs as `command scp -t /path` but
+    # some Linux distros truncate to just `command` if the command is empty).
+    # Group 1 is optional; Group 2 is user.
+    RE_COMMAND_SESSION = re.compile(
+        r"Starting session: command(?: (.+?))? for (\S+) from ([\d.]+) port (\d+)"
+    )
 
     def parse(self, line: str) -> Optional[Dict[str, Any]]:
         """Return event dict or None if line doesn't match sshd patterns."""
@@ -531,6 +546,47 @@ class SshdParser:
                     "ip": ip,
                     "port": int(port),
                     "service": "SCP",
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_SHELL_SESSION.search(line)
+        if m:
+            tty, user, ip, port = m.groups()
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SSH shell session opened: user={user}, ip={ip}, port={port}, tty={tty or 'console'}",
+                "raw_data": {
+                    "event": "sshd.shell_session",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "tty": tty,
+                    "service": "SSH",
+                    "parser": "sshd",
+                },
+            }
+        m = self.RE_COMMAND_SESSION.search(line)
+        if m:
+            cmd, user, ip, port = m.groups()
+            # cmd can be None (bare `Starting session: command for user from ...`)
+            cmd_str = cmd or "(no command)"
+            # Truncate command to keep events compact. WinSCP wraps SCP
+            # as a `command` session — still useful to log.
+            cmd_short = cmd_str[:80] + ("…" if len(cmd_str) > 80 else "")
+            return {
+                "event_type": "log.line",
+                "severity": "INFO",
+                "source": "/var/log/auth.log",
+                "message": f"SSH command exec: user={user}, ip={ip}, port={port}, cmd={cmd_short}",
+                "raw_data": {
+                    "event": "sshd.command_session",
+                    "user": user,
+                    "ip": ip,
+                    "port": int(port),
+                    "command": cmd_short,
+                    "service": "SSH",
                     "parser": "sshd",
                 },
             }
@@ -704,7 +760,7 @@ class LogTailer:
             self.offsets[path] = new_offset
             self.inodes[path] = inode
             if parsed_count or lines:
-                self.log.debug(
+                self.log.info(
                     f"{path}: read {len(lines)} new line(s), parsed {parsed_count}"
                 )
 
@@ -1083,7 +1139,7 @@ class OpenShieldAgent:
         ok, data = self._request("POST", "/api/agents/heartbeat", body, headers)
         if ok:
             stats = data.get("stats", {})
-            self.log.debug(
+            self.log.info(
                 f"Heartbeat OK (events={len(self.event_buffer)} "
                 f"inserted={stats.get('eventsInserted', 0)} "
                 f"deduped={stats.get('eventsDeduped', 0)})"

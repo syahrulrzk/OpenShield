@@ -6,7 +6,11 @@
     "dev": "next dev -p 3001 -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check-agent": "bash scripts/check-agent-sync.sh",
+    "sync-agent": "sudo cp /opt/openshield-agent/agent.py agents/python/agent.py",
+    "precommit": "npm run check-agent",
+    "prepare": "husky"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
@@ -58,6 +62,8 @@
     "@types/ssh2": "^1.15.5",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

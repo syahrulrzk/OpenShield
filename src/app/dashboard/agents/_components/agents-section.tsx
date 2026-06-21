@@ -27,6 +27,7 @@ import {
   Search,
   ArrowUpCircle, // Update Agent button icon
   ChevronRight,
+  Pencil, // Edit name / environment
 } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/animations/modal";
@@ -224,6 +225,68 @@ export function AgentsSection() {
     setResyncTarget(a);
     setResyncIp(a.ip ?? "");
     setResyncErr(null);
+  };
+
+  // ── Edit name + environment ────────────────────────────────
+  // Two cosmetic fields admins frequently want to fix:
+  //   - name: rename a server without SSH'ing into it (e.g. friendly
+  //     alias like "db-prod-primary" instead of "ip-10-1-1-50")
+  //   - environment: reclassify after promotion/demotion or when the
+  //     original choice was a placeholder
+  // Both go through PATCH /api/agents/[id] which writes an audit row.
+  const [editTarget, setEditTarget] = useState<Agent | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEnv, setEditEnv] = useState<AgentEnv>("PROD");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
+
+  const openEdit = (a: Agent) => {
+    setEditTarget(a);
+    setEditName(a.name);
+    setEditEnv(a.environment);
+    setEditErr(null);
+  };
+
+  const submitEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTarget) return;
+    const trimmed = editName.trim();
+    if (!trimmed) {
+      setEditErr("Name cannot be empty");
+      return;
+    }
+    if (trimmed.length > 64) {
+      setEditErr("Name too long (max 64 chars)");
+      return;
+    }
+    setEditBusy(true);
+    setEditErr(null);
+    try {
+      const r = await fetch(`/api/agents/${editTarget.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: trimmed,
+          environment: editEnv,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        toast.success(
+          `Agent updated: "${trimmed}" → ${editEnv}` +
+            (data.unchanged ? " (no changes)" : "")
+        );
+        setEditTarget(null);
+        load();
+      } else {
+        setEditErr(data.error || "Failed to update agent");
+      }
+    } catch (e) {
+      setEditErr(String(e));
+    } finally {
+      setEditBusy(false);
+    }
   };
 
   const openUpdateAgent = (a: Agent) => {
@@ -715,6 +778,13 @@ export function AgentsSection() {
                         {!isRevoked && (
                           <>
                             <button
+                              onClick={() => openEdit(a)}
+                              className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-violet-400"
+                              title={`Edit name / environment (currently "${a.name}" / ${a.environment})`}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick={() => openResync(a)}
                               className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-cyan-400"
                               title={`Resync IP (currently ${a.ip ?? "—"})`}
@@ -810,6 +880,112 @@ export function AgentsSection() {
           os="LINUX"
           onClose={() => setRotatedCreds(null)}
         />
+      )}
+
+      {editTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
+                <Pencil className="w-5 h-5 text-violet-400" />
+                Edit Agent
+              </h2>
+              <button
+                onClick={() => setEditTarget(null)}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mb-4">
+              <span className="font-mono text-zinc-300">{editTarget.displayId ?? editTarget.id.slice(0, 10)}</span>{" "}
+              <span className="text-zinc-600">·</span>{" "}
+              <span className="font-mono">{editTarget.hostname ?? "—"}</span>{" "}
+              <span className="text-zinc-600">·</span>{" "}
+              <span className="font-mono">{editTarget.ip ?? "—"}</span>
+            </p>
+            <form onSubmit={submitEdit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">
+                  Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  maxLength={64}
+                  placeholder="e.g. db-prod-primary"
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-100 text-sm font-mono focus:outline-none focus:border-violet-500"
+                />
+                <p className="text-[10px] text-zinc-600 mt-1.5">
+                  Friendly alias shown in dashboard. Does not affect the agent
+                  process or hostname on the host.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Environment
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["PROD", "STAGING", "UAT"] as AgentEnv[]).map((env) => {
+                    const meta = AGENT_ENV_META[env];
+                    const active = editEnv === env;
+                    return (
+                      <button
+                        key={env}
+                        type="button"
+                        onClick={() => setEditEnv(env)}
+                        className={`px-2 py-2 rounded-lg border text-xs font-mono font-semibold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 ${
+                          active
+                            ? `${meta.bg} ${meta.text} ${meta.border}`
+                            : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${active ? meta.dot : "bg-zinc-600"}`}
+                        />
+                        {env}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-zinc-600 mt-1.5">
+                  Reclassify after server promotion/demotion. Affects
+                  filtering and the env badge color across the dashboard.
+                </p>
+              </div>
+              {editErr && (
+                <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                  {editErr}
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditTarget(null)}
+                  className="flex-1 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editBusy}
+                  className="flex-1 px-3 py-2 rounded-lg bg-violet-500 hover:bg-violet-600 disabled:opacity-50 text-zinc-950 text-sm font-medium flex items-center justify-center gap-1.5"
+                >
+                  {editBusy ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Saving…
+                    </>
+                  ) : (
+                    "Save Changes"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {resyncTarget && (

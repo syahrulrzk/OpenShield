@@ -24,6 +24,15 @@ const patchSchema = z.object({
   // its own detected IP on the next heartbeat (overwriting this) until it
   // is restarted, so use this as a stop-gap or paired with a restart.
   ip: z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, "must be a valid IPv4").optional(),
+  // Edit display name (cosmetic — for dashboard readability).
+  // Useful when agent was auto-named from hostname but admin wants a
+  // friendly alias like "db-prod-primary" instead of "ip-10-1-1-50".
+  // Trim + non-empty enforced; 64 char ceiling matches schema.
+  name: z.string().trim().min(1, "name cannot be empty").max(64, "name too long (max 64 chars)").optional(),
+  // Reclassify environment (PROD/STAGING/UAT). Useful when an agent
+  // was created before its true env was known, or after a server is
+  // promoted/demoted. Matches the Environment enum in prisma/schema.prisma.
+  environment: z.enum(["PROD", "STAGING", "UAT"]).optional(),
 });
 
 export async function DELETE(
@@ -122,6 +131,9 @@ export async function PATCH(
   }
 
   const data: Record<string, unknown> = {};
+  // Track what changed for the audit log — capture before/after so
+  // we can see exactly what the admin edited (and roll back mentally).
+  const diff: Record<string, { from: unknown; to: unknown }> = {};
   if (body.config !== undefined) data.config = body.config;
   if (body.reactivate) {
     data.status = "REGISTERED";
@@ -129,8 +141,21 @@ export async function PATCH(
     data.lastError = null;
   }
   if (body.ip !== undefined) {
+    if (body.ip !== agent.ip) diff.ip = { from: agent.ip, to: body.ip };
     data.ip = body.ip;
     data.lastError = null; // clear stale error from old IP mismatch
+  }
+  if (body.name !== undefined && body.name !== agent.name) {
+    diff.name = { from: agent.name, to: body.name };
+    data.name = body.name;
+  }
+  if (body.environment !== undefined && body.environment !== agent.environment) {
+    diff.environment = { from: agent.environment, to: body.environment };
+    data.environment = body.environment;
+  }
+
+  if (Object.keys(data).length === 0) {
+    return NextResponse.json({ ok: true, agent, unchanged: true });
   }
 
   const updated = await prisma.agent.update({ where: { id }, data });
@@ -140,7 +165,11 @@ export async function PATCH(
     action: body.reactivate ? "agent.reactivated" : "agent.updated",
     resourceType: "agent",
     resourceId: id,
-    metadata: { fields: Object.keys(data), ipChanged: body.ip !== undefined },
+    metadata: {
+      fields: Object.keys(data),
+      ipChanged: body.ip !== undefined,
+      diff,
+    },
   });
 
   return NextResponse.json({ ok: true, agent: updated });

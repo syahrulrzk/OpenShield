@@ -1,0 +1,37 @@
+# OpenShield pre-commit hook
+# ─────────────────────────────────────────────────────────────
+# Runs the agent sync guard BEFORE allowing a commit.
+# Why: every change to /opt/openshield-agent/agent.py MUST also
+# be reflected in agents/python/agent.py + VERSION bumped +
+# AGENT_COMPAT.latest bumped. This hook catches drift early so we
+# never ship an installer that delivers an outdated agent.
+#
+# To bypass (NOT recommended):
+#   git commit --no-verify
+# ─────────────────────────────────────────────────────────────
+
+echo "🛡️  Running OpenShield agent sync guard..."
+echo ""
+
+if ! npm run --silent check-agent; then
+  echo ""
+  echo "❌ Commit blocked: agent source/installer is out of sync."
+  echo ""
+  echo "   Common fixes:"
+  echo "   1. If you changed /opt/openshield-agent/agent.py:"
+  echo "        npm run sync-agent"
+  echo "        # Then bump VERSION in agents/python/agent.py AND"
+  echo "        # AGENT_COMPAT.latest in src/lib/agent-versions.ts"
+  echo ""
+  echo "   2. If you only changed installer routes or docs:"
+  echo "        # No version bump needed, but re-run check:"
+  echo "        npm run check-agent"
+  echo ""
+  echo "   3. To skip this check (DANGEROUS):"
+  echo "        git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "✅ Agent sync OK — proceeding with commit"
