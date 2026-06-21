@@ -210,7 +210,7 @@ export async function POST(req: NextRequest) {
         // Dedup-with-aggregation: same (assetId, username, sourceIp, status)
         // within 5-minute window → UPDATE count++ and bump eventTime to latest
         const dedupStart = new Date(eventTime.getTime() - DEDUP_WINDOW_MS);
-        const existing = await prisma.serverEvent.findFirst({
+        const existing = await prisma.tEventLogServerAuth.findFirst({
           where: {
             assetId: result.assetId,
             username: e.username,
@@ -222,7 +222,7 @@ export async function POST(req: NextRequest) {
         });
         if (existing) {
           try {
-            await prisma.serverEvent.update({
+            await prisma.tEventLogServerAuth.update({
               where: { id: existing.id },
               data: {
                 count: { increment: 1 },
@@ -239,7 +239,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
         try {
-          await prisma.serverEvent.create({
+          await prisma.tEventLogServerAuth.create({
             data: {
               assetId: result.assetId,
               username: e.username,
@@ -277,7 +277,7 @@ export async function POST(req: NextRequest) {
       for (const e of result.events.db) {
         const eventTime = new Date(e.eventTime);
         const dedupStart = new Date(eventTime.getTime() - DEDUP_WINDOW_MS);
-        const existing = await prisma.dbEvent.findFirst({
+        const existing = await prisma.tEventLogDatabase.findFirst({
           where: {
             assetId: result.assetId,
             username: e.username,
@@ -289,7 +289,7 @@ export async function POST(req: NextRequest) {
         });
         if (existing) {
           try {
-            await prisma.dbEvent.update({
+            await prisma.tEventLogDatabase.update({
               where: { id: existing.id },
               data: {
                 count: { increment: 1 },
@@ -304,7 +304,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
         try {
-          await prisma.dbEvent.create({
+          await prisma.tEventLogDatabase.create({
             data: {
               assetId: result.assetId,
               dbType: e.dbType,

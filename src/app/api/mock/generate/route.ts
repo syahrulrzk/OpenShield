@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
     const sshAssets = assets.filter((a) => a.category === "SSH");
     const dbAssets  = assets.filter((a) => a.category === "DATABASE");
 
-    const serverEventsData: Array<{
+    const serverAuthData: Array<{
       assetId: string;
       username: string;
       sourceIp: string;
@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
           status !== "SUCCESS" && randomInt(100) < 40
             ? SOURCE_IPS.slice(0, 4)[randomInt(4)] // attacker pool
             : SOURCE_IPS[randomInt(SOURCE_IPS.length)];
-        serverEventsData.push({
+        serverAuthData.push({
           assetId: asset.id,
           username: SSH_USERNAMES[randomInt(SSH_USERNAMES.length)],
           sourceIp: ip,
@@ -153,10 +153,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Bulk insert SSH events
-    await prisma.serverEvent.createMany({ data: serverEventsData });
+    await prisma.tEventLogServerAuth.createMany({ data: serverAuthData });
 
     // 3. Generate DB events
-    const dbEventsData: Array<{
+    const databaseEventsData: Array<{
       assetId: string;
       dbType: "POSTGRES" | "MYSQL" | "SQLSERVER";
       username: string;
@@ -171,13 +171,13 @@ export async function POST(req: NextRequest) {
       const defaultDb = dbType === "POSTGRES" ? "postgres" : dbType === "MYSQL" ? "mysql" : "master";
       for (let i = 0; i < cfg.dbEventsPerAsset; i++) {
         const r = randomInt(100);
-        const status: "SUCCESS" | "FAILED" | "DENIED" =
-          r < 80 ? "SUCCESS" : r < 95 ? "FAILED" : "DENIED";
+        const status: "SUCCESS" | "FAILED" =
+          r < 80 ? "SUCCESS" : r < 95 ? "FAILED" : "FAILED";
         const ip =
           status !== "SUCCESS" && randomInt(100) < 30
             ? SOURCE_IPS.slice(0, 4)[randomInt(4)]
             : SOURCE_IPS[randomInt(SOURCE_IPS.length)];
-        dbEventsData.push({
+        databaseEventsData.push({
           assetId: asset.id,
           dbType,
           username: DB_USERNAMES[randomInt(DB_USERNAMES.length)],
@@ -188,7 +188,7 @@ export async function POST(req: NextRequest) {
         });
       }
     }
-    await prisma.dbEvent.createMany({ data: dbEventsData });
+    await prisma.tEventLogDatabase.createMany({ data: databaseEventsData });
 
     // 4. Generate alerts (CRITICAL for brute-force patterns)
     const alertTitles = [
@@ -238,8 +238,8 @@ export async function POST(req: NextRequest) {
         batchId,
         scale: body.scale,
         assets: assets.length,
-        serverEvents: serverEventsData.length,
-        dbEvents: dbEventsData.length,
+        serverEvents: serverAuthData.length,
+        dbEvents: databaseEventsData.length,
         alerts: alertsData.length,
       },
     });
@@ -250,8 +250,8 @@ export async function POST(req: NextRequest) {
       scale: body.scale,
       created: {
         assets: assets.length,
-        serverEvents: serverEventsData.length,
-        dbEvents: dbEventsData.length,
+        serverEvents: serverAuthData.length,
+        dbEvents: databaseEventsData.length,
         alerts: alertsData.length,
       },
     });

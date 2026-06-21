@@ -62,27 +62,92 @@ export default async function AlertsPage() {
     },
   });
 
-  // Fallback: pull recent agent events with ERROR/CRITICAL severity
+  // Fallback (2026-06-21 refactor): pull recent ERROR/CRITICAL events from
+  // multiple per-type tables (syslog daemon errors + apps service errors +
+  // server auth failures). UNION-equivalent via Promise.all + sort + slice.
   if (alerts.length === 0) {
-    const agentEvents = await prisma.agentEvent.findMany({
-      where: {
-        severity: { in: ["ERROR", "CRITICAL"] },
-      },
-      orderBy: { eventTime: "desc" },
-      take: 50,
-      include: {
-        agent: { select: { name: true, hostname: true } },
-      },
-    });
+    const [syslogEvents, appsEvents, authEvents] = await Promise.all([
+      prisma.tEventLogSyslog.findMany({
+        where: { severity: { in: ["ERROR", "CRITICAL"] } },
+        orderBy: { eventTime: "desc" },
+        take: 30,
+        select: {
+          id: true,
+          severity: true,
+          source: true,
+          message: true,
+          eventTime: true,
+          agent: { select: { name: true, hostname: true } },
+        },
+      }),
+      prisma.tEventLogApps.findMany({
+        where: { severity: { in: ["ERROR", "CRITICAL"] } },
+        orderBy: { eventTime: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          severity: true,
+          appName: true,
+          message: true,
+          eventTime: true,
+          agent: { select: { name: true, hostname: true } },
+        },
+      }),
+      prisma.tEventLogServerAuth.findMany({
+        where: { status: "FAILED" },
+        orderBy: { eventTime: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          username: true,
+          sourceIp: true,
+          raw: true,
+          eventTime: true,
+          agent: { select: { name: true, hostname: true } },
+        },
+      }),
+    ]);
 
-    alerts = agentEvents.map((e) => ({
+    const fallbackAlerts = [
+      ...syslogEvents.map((e) => ({
+        id: "syslog:" + e.id,
+        severity: e.severity === "CRITICAL" ? "CRITICAL" as const : "HIGH" as const,
+        title: (e.source.split("/").pop() || e.source) + " (syslog)",
+        description: e.message,
+        status: "OPEN" as const,
+        createdAt: e.eventTime,
+        assetHostname: e.agent?.hostname || e.agent?.name || "unknown",
+      })),
+      ...appsEvents.map((e) => ({
+        id: "apps:" + e.id,
+        severity: e.severity === "CRITICAL" ? "CRITICAL" as const : "HIGH" as const,
+        title: e.appName + " error",
+        description: e.message,
+        status: "OPEN" as const,
+        createdAt: e.eventTime,
+        assetHostname: e.agent?.hostname || e.agent?.name || "unknown",
+      })),
+      ...authEvents.map((e) => ({
+        id: "auth:" + e.id,
+        severity: "HIGH" as const,
+        title: `Failed auth: ${e.username}@${e.sourceIp}`,
+        description: e.raw ?? `Failed authentication for ${e.username} from ${e.sourceIp}`,
+        status: "OPEN" as const,
+        createdAt: e.eventTime,
+        assetHostname: e.agent?.hostname || e.agent?.name || "unknown",
+      })),
+    ];
+
+    // Sort all by createdAt desc, slice to top 50
+    fallbackAlerts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    alerts = fallbackAlerts.slice(0, 50).map((e) => ({
       id: e.id,
-      severity: e.severity === "CRITICAL" ? "CRITICAL" : "HIGH",
-      title: e.source.split("/").pop() || e.source,
-      description: e.message,
-      status: "OPEN",
-      createdAt: e.eventTime,
-      asset: { hostname: e.agent?.hostname || e.agent?.name || "unknown" },
+      severity: e.severity,
+      title: e.title,
+      description: e.description,
+      status: e.status,
+      createdAt: e.createdAt,
+      asset: { hostname: e.assetHostname },
     }));
   }
 

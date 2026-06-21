@@ -125,8 +125,8 @@ model Asset {
   // Privacy: only Connect/Quit + Access-denied rows are parsed; query bodies
   // are NEVER persisted to OpenShield.
   // MySQL only — PG/MSSQL ignore this flag.
-  auditConnectionLog  Boolean   @default(false) @map("audit_connection_log")
-  lastAuditEventId    BigInt?   @map("last_audit_event_id") // mysql.general_log.event_time microsecond cursor
+  auditConnectionLog Boolean @default(false) @map("audit_connection_log")
+  lastAuditEventId   BigInt? @map("last_audit_event_id") // mysql.general_log.event_time microsecond cursor
 
   status     AssetStatus @default(PENDING)
   lastSeenAt DateTime?   @map("last_seen_at")
@@ -141,12 +141,16 @@ model Asset {
   lastPolledAt DateTime?    @map("last_polled_at")
   pollCount    Int          @default(0) @map("poll_count")
 
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sshCredentials AssetCredential? @relation("SshCred")
-  dbCredentials  AssetCredential? @relation("DbCred")
-  serverEvents   ServerEvent[]
-  dbEvents       DbEvent[]
-  alerts         Alert[]
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sshCredentials   AssetCredential?      @relation("SshCred")
+  dbCredentials    AssetCredential?      @relation("DbCred")
+  // 6 per-type event log relations (replaces serverEvents + dbEvents).
+  // Note: t_event_log_database is the only one tied to Asset (poller-side).
+  // t_event_log_server_auth can be tied to Asset (poller-side auth.log) or
+  // Agent (agent-side sshd) — both nullable.
+  serverAuthEvents TEventLogServerAuth[]
+  databaseEvents   TEventLogDatabase[]
+  alerts           Alert[]
 
   @@unique([userId, hostname])
   @@unique([userId, displayName])
@@ -224,63 +228,243 @@ model AssetCredential {
 // SSH EVENTS (login success/failed)
 // ============================================================
 
-model ServerEvent {
+// ============================================================
+// EVENT LOG TABLES (per-type)
+// ============================================================
+// Architecture note (2026-06-21): we split the original `agent_events`,
+// `server_events`, and `db_events` tables into 6 specialized tables for:
+//   1. Cleaner separation per log source
+//   2. Per-table retention / backup / archive policies
+//   3. Tighter indexes (no JSONB scan, per-type columns)
+//   4. Easier to extend (e.g. add fields specific to one log type)
+//
+// Tables:
+//   t_event_log_syslog         — OS / daemon log (syslog, journal)
+//   t_event_log_server_auth    — SSH/auth log (sshd from agent + auth.log poller)
+//   t_event_log_fim            — File Integrity Monitoring (agent-side)
+//   t_event_log_auditd         — Linux auditd (future, no events yet)
+//   t_event_log_apps           — App-level audit (MySQL/PG/Redis/Nginx, etc.)
+//   t_event_log_database       — DB login events (poller-side, login only)
+//
+// Each event type has its own severity enum where appropriate.
+// All share `count` (dedup-aggregation) and `createdAt` for queries.
+
+// ----- SYSLOG ----- //
+// Generic system logs from /var/log/syslog, journal, etc.
+// Agent-side only. No user/IP (those are extracted to server_auth when present).
+model TEventLogSyslog {
+  id        String   @id @default(cuid())
+  agentId   String   @map("agent_id")
+  // Severity level: INFO | WARN | ERROR | CRITICAL
+  severity  String   @default("INFO")
+  // Log source — file path or process name (e.g. "/var/log/syslog", "dockerd")
+  source    String
+  // Process name extracted from the log line (e.g. "python3", "systemd", "dockerd")
+  // NULL if not parseable. Used for grouping in dashboard.
+  process   String?
+  // PID if extracted
+  pid       Int?
+  // Hostname where the log originated
+  hostname  String?
+  // Truncated message (240 chars) for dashboard. Full message in rawData->full_message.
+  message   String
+  // Structured details: full_message, _dedupSig, parser, eventTime, etc.
+  rawData   Json?    @map("raw_data")
+  eventTime DateTime @map("event_time")
+  count     Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@index([process, eventTime(sort: Desc)])
+  @@index([source, eventTime(sort: Desc)])
+  @@map("t_event_log_syslog")
+}
+
+// ----- SERVER AUTH ----- //
+// SSH/auth events: agent-side sshd parser + server-side auth.log poller.
+// Unified: agentId OR assetId (one of them must be set).
+model TEventLogServerAuth {
   id        String       @id @default(cuid())
-  assetId   String       @map("asset_id")
-  username  String // user trying to log in
+  // agentId for agent-side sshd, NULL for poller-side
+  agentId   String?      @map("agent_id")
+  // assetId for poller-side, NULL for agent-side
+  assetId   String?      @map("asset_id")
+  // User trying to authenticate
+  username  String
   sourceIp  String       @map("source_ip")
+  // SUCCESS | FAILED | INVALID (invalid user)
   status    ServerStatus
-  method    String? // e.g. "publickey", "password"
-  country   String? // GeoIP later
+  // Auth method: "publickey", "password", "keyboard-interactive", etc.
+  method    String?
+  // GeoIP country (NULL until GeoIP feature ships)
+  country   String?
+  // Event time
   eventTime DateTime     @map("event_time")
-  raw       String? // raw log line (for audit)
-  // Aggregation: identical events within the dedup window are merged
-  // into a single row with count incremented (prevents spam from
-  // cronjobs/automated SSH that log every minute).
+  // Raw log line (for audit/debug)
+  raw       String?
+  // Dedup aggregation: identical events within window are merged with count++.
   count     Int          @default(1)
   createdAt DateTime     @default(now()) @map("created_at")
 
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  asset Asset? @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, eventTime(sort: Desc)])
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([sourceIp, eventTime(sort: Desc)])
+  @@index([status, eventTime(sort: Desc)])
+  @@index([username, eventTime(sort: Desc)])
+  @@map("t_event_log_server_auth")
+}
+
+// ----- FIM (File Integrity Monitoring) ----- //
+// Tracks file changes detected by the agent.
+// Action: ADDED (new file in baseline) | MODIFIED (hash changed) | REMOVED (file gone)
+model TEventLogFim {
+  id        String    @id @default(cuid())
+  agentId   String    @map("agent_id")
+  // Severity: WARN (default) | CRITICAL (e.g. /etc/passwd modified)
+  severity  String    @default("WARN")
+  // ADDED | MODIFIED | REMOVED
+  action    String
+  // File path that changed
+  path      String
+  // SHA-256 hash BEFORE the change (NULL for ADDED)
+  oldHash   String?   @map("old_hash")
+  // SHA-256 hash AFTER the change (NULL for REMOVED)
+  newHash   String?   @map("new_hash")
+  // File size in bytes (NULL if file removed)
+  size      BigInt?
+  // File mode (e.g. "0644", "0600")
+  mode      String?
+  // File owner (e.g. "root:root")
+  owner     String?
+  // File mtime when change was detected
+  fileTime  DateTime? @map("file_time")
+  // Human-readable message
+  message   String
+  rawData   Json?     @map("raw_data")
+  eventTime DateTime  @map("event_time")
+  count     Int       @default(1)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([path, eventTime(sort: Desc)])
+  @@index([action, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@map("t_event_log_fim")
+}
+
+// ----- AUDITD ----- //
+// Linux auditd events. No events yet (agent doesn't ship auditd parser).
+// Schema is a forward-compat placeholder; fields can be tightened once
+// we have real data.
+model TEventLogAuditd {
+  id        String   @id @default(cuid())
+  agentId   String   @map("agent_id")
+  severity  String   @default("INFO")
+  // auditd type, e.g. "USER_LOGIN", "SYSCALL", "USER_CMD"
+  eventType String   @map("event_type")
+  // Auditd message type code, e.g. 1112 (user login)
+  typeCode  Int?     @map("type_code")
+  // Process that triggered the audit event
+  process   String?
+  pid       Int?
+  // User (uid) and effective user (euid)
+  uid       String?
+  euid      String?
+  // Audit summary string (e.g. "uid=0 exe=... terminal=pts/0 success=0")
+  message   String
+  rawData   Json?    @map("raw_data")
+  eventTime DateTime @map("event_time")
+  count     Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([eventType, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@map("t_event_log_auditd")
+}
+
+// ----- APPS ----- //
+// Application-level audit logs: MySQL audit, PG audit, Redis, Nginx, Apache, etc.
+// Generic enough to host multiple app types via `appName` field.
+model TEventLogApps {
+  id        String   @id @default(cuid())
+  agentId   String   @map("agent_id")
+  // App name, e.g. "mysql", "postgresql", "redis", "nginx"
+  appName   String   @map("app_name")
+  // Sub-event within app, e.g. "mysql.connect.success", "mysql.disconnect",
+  // "pg.connect.failed". Free-form string for flexibility.
+  event     String
+  // Severity: INFO | WARN | ERROR | CRITICAL
+  severity  String   @default("INFO")
+  // Optional user (e.g. db user from connect log)
+  username  String?
+  // Optional source IP
+  sourceIp  String?  @map("source_ip")
+  // Optional database name (for DB audit)
+  database  String?
+  // Human-readable message
+  message   String
+  rawData   Json?    @map("raw_data")
+  eventTime DateTime @map("event_time")
+  count     Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([appName, eventTime(sort: Desc)])
+  @@index([event, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@index([username, eventTime(sort: Desc)])
+  @@index([sourceIp, eventTime(sort: Desc)])
+  @@map("t_event_log_apps")
+}
+
+// ----- DATABASE ----- //
+// DB login events from the server-side poller (auth_log/audit_log).
+// Privacy: only login success/fail/denied — never query bodies.
+model TEventLogDatabase {
+  id        String        @id @default(cuid())
+  assetId   String        @map("asset_id")
+  // POSTGRES | MYSQL | SQLSERVER
+  dbType    DbType        @map("db_type")
+  // DB user
+  username  String
+  sourceIp  String?       @map("source_ip")
+  // DB name
+  database  String?
+  // SUCCESS | FAILED | DENIED
+  status    DbEventStatus
+  eventTime DateTime      @map("event_time")
+  // Raw log line (for audit/debug)
+  raw       String?
+  count     Int           @default(1)
+  createdAt DateTime      @default(now()) @map("created_at")
+
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
-  @@index([assetId, eventTime])
-  @@index([sourceIp, eventTime])
-  @@index([status, eventTime])
-  @@map("server_events")
+  @@index([assetId, eventTime(sort: Desc)])
+  @@index([username, eventTime(sort: Desc)])
+  @@index([sourceIp, eventTime(sort: Desc)])
+  @@index([status, eventTime(sort: Desc)])
+  @@index([dbType, eventTime(sort: Desc)])
+  @@map("t_event_log_database")
 }
 
 enum ServerStatus {
   SUCCESS
   FAILED
   INVALID // invalid user
-}
-
-// ============================================================
-// DB EVENTS (login success/failed for Postgres/MySQL/SQLServer)
-// Lightweight: NO query text, just auth metadata
-// ============================================================
-
-model DbEvent {
-  id        String        @id @default(cuid())
-  assetId   String        @map("asset_id")
-  dbType    DbType        @map("db_type") // POSTGRES | MYSQL | SQLSERVER
-  username  String // db user
-  sourceIp  String?       @map("source_ip")
-  database  String? // db name (or default db)
-  status    DbEventStatus
-  eventTime DateTime      @map("event_time")
-  raw       String? // raw log line
-  // Aggregation: same idea as ServerEvent — duplicate events merged
-  count     Int           @default(1)
-  createdAt DateTime      @default(now()) @map("created_at")
-
-  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
-
-  @@index([assetId, eventTime])
-  @@index([username, eventTime])
-  @@index([sourceIp, eventTime])
-  @@index([status, eventTime])
-  @@index([dbType, eventTime])
-  @@map("db_events")
 }
 
 enum DbEventStatus {
@@ -415,7 +599,14 @@ model Agent {
   // Stats
   eventsSent    Int         @default(0) @map("events_sent")
 
-  events AgentEvent[]
+  // 6 per-type event log relations (replaces single AgentEvent[]).
+  // Each event type has its own table for cleaner separation, per-type
+  // retention/backup, and tighter indexes. See EVENT LOG TABLES section.
+  syslogEvents     TEventLogSyslog[]
+  serverAuthEvents TEventLogServerAuth[]
+  fimEvents        TEventLogFim[]
+  auditdEvents     TEventLogAuditd[]
+  appEvents        TEventLogApps[]
 
   // Removed: @@unique([hostname, type]) — incompatible with admin-initiated
   // flow where multiple agents can run on the same host (each with own agentId).
@@ -447,22 +638,7 @@ enum AgentStatus {
 //   - process.new : new suspicious process started
 //   - metric.system : CPU/RAM/disk/network sample
 //   - custom      : user-defined plugin output
-model AgentEvent {
-  id        String   @id @default(cuid())
-  agentId   String   @map("agent_id")
-  eventType String // see comment above
-  severity  String   @default("INFO") // INFO | WARN | ERROR | CRITICAL
-  source    String // file path, process name, or metric identifier
-  message   String // human-readable summary
-  rawData   Json?    @map("raw_data") // structured details (parsed fields)
-  eventTime DateTime @map("event_time")
-  count     Int      @default(1) // same dedup-with-aggregation idea
-  createdAt DateTime @default(now()) @map("created_at")
-
-  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@index([agentId, eventTime])
-  @@index([eventType, eventTime])
-  @@index([severity, eventTime])
-  @@map("agent_events")
-}
+// NOTE: AgentEvent model removed 2026-06-21. Use 6 specialized tables:
+//   TEventLogSyslog, TEventLogServerAuth, TEventLogFim,
+//   TEventLogAuditd, TEventLogApps, TEventLogDatabase.
+// See the "EVENT LOG TABLES" section above for the new schema.

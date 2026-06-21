@@ -46,7 +46,17 @@ export async function DELETE(
   const { id } = await params;
   const agent = await prisma.agent.findUnique({
     where: { id },
-    include: { _count: { select: { events: true } } },
+    include: {
+      _count: {
+        select: {
+          syslogEvents: true,
+          serverAuthEvents: true,
+          fimEvents: true,
+          auditdEvents: true,
+          appEvents: true,
+        },
+      },
+    },
   });
   if (!agent) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -56,8 +66,21 @@ export async function DELETE(
 
   if (hard) {
     // Hard delete — remove row + cascade events. Audit snapshot kept as JSON in metadata.
-    const eventCount = agent._count.events;
-    await prisma.agentEvent.deleteMany({ where: { agentId: id } });
+    const eventCount =
+      agent._count.syslogEvents +
+      agent._count.serverAuthEvents +
+      agent._count.fimEvents +
+      agent._count.auditdEvents +
+      agent._count.appEvents;
+    // 2026-06-21 refactor: events span 5 per-type tables (agent-side only;
+    // database events live on Asset, not Agent — handled by Asset cascade).
+    await Promise.all([
+      prisma.tEventLogSyslog.deleteMany({ where: { agentId: id } }),
+      prisma.tEventLogServerAuth.deleteMany({ where: { agentId: id } }),
+      prisma.tEventLogFim.deleteMany({ where: { agentId: id } }),
+      prisma.tEventLogAuditd.deleteMany({ where: { agentId: id } }),
+      prisma.tEventLogApps.deleteMany({ where: { agentId: id } }),
+    ]);
     await prisma.agent.delete({ where: { id } });
 
     await audit({

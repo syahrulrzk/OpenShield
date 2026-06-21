@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     };
     sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
 
-    const events = await prisma.serverEvent.findMany({
+    const events = await prisma.tEventLogServerAuth.findMany({
       where: { asset: { userId: auth.userId }, eventTime: { gte: since } },
       orderBy: { eventTime: "desc" },
       include: { asset: { select: { hostname: true } } },
@@ -55,7 +55,7 @@ export async function GET(req: Request) {
     for (const e of events) {
       const row = sheet.addRow({
         time: e.eventTime,
-        hostname: e.asset.hostname,
+        hostname: e.asset?.hostname ?? "",
         username: e.username,
         sourceIp: e.sourceIp,
         status: e.status,
@@ -88,7 +88,7 @@ export async function GET(req: Request) {
     sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF000000" } };
 
-    const events = await prisma.dbEvent.findMany({
+    const events = await prisma.tEventLogDatabase.findMany({
       where: { asset: { userId: auth.userId }, eventTime: { gte: since } },
       orderBy: { eventTime: "desc" },
       include: { asset: { select: { hostname: true } } },
@@ -96,7 +96,7 @@ export async function GET(req: Request) {
     for (const e of events) {
       const row = sheet.addRow({
         time: e.eventTime,
-        hostname: e.asset.hostname,
+        hostname: e.asset?.hostname ?? "",
         dbType: e.dbType,
         username: e.username,
         sourceIp: e.sourceIp ?? "",

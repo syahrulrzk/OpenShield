@@ -91,14 +91,15 @@ export default async function SyslogEventsPage({
         : subHours(new Date(), 24);
 
   // Base filter: only events from syslog sources
-  const baseWhere: Prisma.AgentEventWhereInput = {
-    eventType: "log.line",
+  // Refactored 2026-06-21: query tEventLogSyslog (per-type table) directly
+  // instead of agentEvents + filter. Faster + cleaner.
+  const baseWhere: Prisma.TEventLogSyslogWhereInput = {
     eventTime: { gte: since },
     source: { in: [...SYSLOG_SOURCES] },
   };
 
   // Build search filters (same pattern as /api/events/server)
-  const andClauses: Prisma.AgentEventWhereInput[] = [];
+  const andClauses: Prisma.TEventLogSyslogWhereInput[] = [];
   const dateRange = parseDateFromQuery(q);
   if (dateRange) andClauses.push({ eventTime: dateRange });
   if (q) {
@@ -112,28 +113,28 @@ export default async function SyslogEventsPage({
         OR: [
           { message: { contains: textQuery, mode: "insensitive" } },
           { source: { contains: textQuery, mode: "insensitive" } },
-          { rawData: { path: ["process"], string_contains: textQuery } },
-          { rawData: { path: ["hostname"], string_contains: textQuery } },
+          { process: { contains: textQuery, mode: "insensitive" } },
+          { hostname: { contains: textQuery, mode: "insensitive" } },
         ],
       });
     }
   }
 
-  const where: Prisma.AgentEventWhereInput = {
+  const where: Prisma.TEventLogSyslogWhereInput = {
     ...baseWhere,
     ...(andClauses.length > 0 ? { AND: andClauses } : {}),
   };
 
   const [rawEvents, total] = await Promise.all([
-    prisma.agentEvent.findMany({
+    prisma.tEventLogSyslog.findMany({
       where,
       orderBy: { eventTime: "desc" },
       take: 500,
       select: {
         id: true,
-        eventType: true,
         severity: true,
         source: true,
+        process: true,
         message: true,
         rawData: true,
         eventTime: true,
@@ -141,7 +142,7 @@ export default async function SyslogEventsPage({
         agent: { select: { name: true, hostname: true, ip: true } },
       },
     }),
-    prisma.agentEvent.count({ where: baseWhere }),
+    prisma.tEventLogSyslog.count({ where: baseWhere }),
   ]);
 
   const syslogEvents = rawEvents.filter((e) => isSyslogEvent(e.source));

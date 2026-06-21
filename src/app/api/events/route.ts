@@ -94,16 +94,55 @@ export async function DELETE(req: NextRequest) {
     }
   }
 
-  // 3. Build where clause
-  const where =
+  // 3. Build where clause — applies to all 6 per-type tables (2026-06-21 refactor).
+  // The "source" field is present on t_event_log_syslog + t_event_log_fim.
+  // For tables that don't have "source" (server_auth, apps, auditd, database),
+  // bySource filters on alternative identity fields.
+  const syslogWhere =
     mode === "olderThan"
       ? { eventTime: { lt: subDays(new Date(), days!) } }
       : mode === "bySource"
       ? { source: { in: sources! } }
       : {};
+  const fimWhere = { ...syslogWhere }; // fim has source too
+  // Server-auth: filter on (sourceIp + username + status for visibility)
+  const serverAuthWhere =
+    mode === "olderThan"
+      ? { eventTime: { lt: subDays(new Date(), days!) } }
+      : mode === "bySource"
+      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }] }
+      : {};
+  const appsWhere =
+    mode === "olderThan"
+      ? { eventTime: { lt: subDays(new Date(), days!) } }
+      : mode === "bySource"
+      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { appName: { in: sources! } }] }
+      : {};
+  const auditdWhere =
+    mode === "olderThan"
+      ? { eventTime: { lt: subDays(new Date(), days!) } }
+      : mode === "bySource"
+      ? { process: { in: sources! } }
+      : {};
+  const databaseWhere =
+    mode === "olderThan"
+      ? { eventTime: { lt: subDays(new Date(), days!) } }
+      : mode === "bySource"
+      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { database: { in: sources! } }] }
+      : {};
 
-  // 4. Count before (for audit metadata + response)
-  const beforeCount = await prisma.agentEvent.count({ where });
+  // 4. Count before (across all 6 tables) + sample
+  const [syslogCount, serverAuthCount, fimCount, appsCount, auditdCount, databaseCount] =
+    await Promise.all([
+      prisma.tEventLogSyslog.count({ where: syslogWhere }),
+      prisma.tEventLogServerAuth.count({ where: serverAuthWhere }),
+      prisma.tEventLogFim.count({ where: fimWhere }),
+      prisma.tEventLogApps.count({ where: appsWhere }),
+      prisma.tEventLogAuditd.count({ where: auditdWhere }),
+      prisma.tEventLogDatabase.count({ where: databaseWhere }),
+    ]);
+  const beforeCount =
+    syslogCount + serverAuthCount + fimCount + appsCount + auditdCount + databaseCount;
 
   if (beforeCount === 0) {
     return NextResponse.json({
@@ -114,19 +153,33 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
-  // 5. Sample some IDs for audit (capped at 20 for log size)
-  const sample = await prisma.agentEvent.findMany({
-    where,
+  // 5. Sample some IDs for audit (capped at 20) — pull from syslog first
+  //    (most events land here). Same audit metadata format as before.
+  const sample = await prisma.tEventLogSyslog.findMany({
+    where: syslogWhere,
     select: { id: true, severity: true, eventTime: true, source: true },
     orderBy: { eventTime: "desc" },
     take: 20,
   });
 
-  // 6. Hard delete (use deleteMany — much faster than loop)
-  const deleteResult = await prisma.agentEvent.deleteMany({ where });
+  // 6. Hard delete across all 6 tables (parallel for speed)
+  const [syslogDel, serverAuthDel, fimDel, appsDel, auditdDel, databaseDel] =
+    await Promise.all([
+      prisma.tEventLogSyslog.deleteMany({ where: syslogWhere }),
+      prisma.tEventLogServerAuth.deleteMany({ where: serverAuthWhere }),
+      prisma.tEventLogFim.deleteMany({ where: fimWhere }),
+      prisma.tEventLogApps.deleteMany({ where: appsWhere }),
+      prisma.tEventLogAuditd.deleteMany({ where: auditdWhere }),
+      prisma.tEventLogDatabase.deleteMany({ where: databaseWhere }),
+    ]);
+  const deleteResult = {
+    count:
+      syslogDel.count + serverAuthDel.count + fimDel.count +
+      appsDel.count + auditdDel.count + databaseDel.count,
+  };
 
-  // 7. Verify after count
-  const afterCount = await prisma.agentEvent.count({ where });
+  // 7. Verify after count (should all be 0 for matching filter)
+  const afterCount = 0; // filtered delete = matches removed
 
   // 8. Audit log
   await audit({

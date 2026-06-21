@@ -274,26 +274,28 @@ export default async function ServerEventsPage({
   // show them in the live operational view. Admins can opt-in via ?hideRevoked=0.
   const hideRevoked = sp.hideRevoked !== "0";
 
-  // Base WHERE — audit trail: by default exclude events from revoked agents.
-  const baseWhere: Prisma.AgentEventWhereInput = {
-    eventType: "log.line",
+  // 2026-06-21 refactor: server auth events now live in tEventLogServerAuth
+  // (unified table for agent-side sshd + poller-side auth). Direct query.
+  const baseWhere: Prisma.TEventLogServerAuthWhereInput = {
     eventTime: { gte: since },
     ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
   };
 
   // Build search filters — same logic as /api/events/server so SSR matches
-  // client-side fetches exactly.
-  const andClauses: Prisma.AgentEventWhereInput[] = [];
+  // client-side fetches exactly. Field path mappings: message → raw, user → username, ip → sourceIp.
+  const andClauses: Prisma.TEventLogServerAuthWhereInput[] = [];
   const dateRange = parseDateFromQuery(q);
   if (dateRange) andClauses.push({ eventTime: dateRange });
   const ipMatch = parseIpFromQuery(q);
   if (ipMatch) {
-    andClauses.push({ rawData: { path: ["ip"], string_contains: ipMatch } });
+    andClauses.push({
+      OR: [
+        { sourceIp: { contains: ipMatch } },
+        { raw: { contains: ipMatch } },
+      ],
+    });
   }
   if (q) {
-    // Strip dates and IPs from q — they're handled by dedicated filters above.
-    // Otherwise the text-search OR would exclude everything when "2026-06-19"
-    // doesn't appear in message/source/user.
     const textQuery = q
       .replace(/\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g, "")
       .replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}\b/g, "")
@@ -302,44 +304,66 @@ export default async function ServerEventsPage({
     if (textQuery) {
       andClauses.push({
         OR: [
-          { message: { contains: textQuery, mode: "insensitive" } },
-          { source: { contains: textQuery, mode: "insensitive" } },
-          { rawData: { path: ["user"], string_contains: textQuery } },
-          { rawData: { path: ["username"], string_contains: textQuery } },
+          { raw: { contains: textQuery, mode: "insensitive" } },
+          { username: { contains: textQuery, mode: "insensitive" } },
+          { sourceIp: { contains: textQuery } },
+          { agent: { name: { contains: textQuery, mode: "insensitive" } } },
+          { agent: { hostname: { contains: textQuery, mode: "insensitive" } } },
         ],
       });
     }
   }
-  const where: Prisma.AgentEventWhereInput = {
+  const where: Prisma.TEventLogServerAuthWhereInput = {
     ...baseWhere,
     ...(andClauses.length > 0 ? { AND: andClauses } : {}),
   };
 
   const [rawEvents, total] = await Promise.all([
-    prisma.agentEvent.findMany({
+    prisma.tEventLogServerAuth.findMany({
       where,
       orderBy: { eventTime: "desc" },
       take: 500,
       select: {
         id: true,
-        eventType: true,
-        severity: true,
-        source: true,
-        message: true,
-        rawData: true,
+        username: true,
+        sourceIp: true,
+        status: true,
+        method: true,
+        country: true,
+        raw: true,
         eventTime: true,
         count: true,
         agent: { select: { name: true, hostname: true, ip: true } },
       },
     }),
-    prisma.agentEvent.count({ where: baseWhere }),
+    prisma.tEventLogServerAuth.count({ where: baseWhere }),
   ]);
 
-  const serverEvents = rawEvents.filter((e) => isServerEvent(e.source));
-  const eventsWithStatus = serverEvents.map((e) => ({
-    ...e,
-    status: getEventStatus(e.severity, e.message),
-  }));
+  // Map tEventLogServerAuth → ServerEvent-like shape for ServerEventsContent
+  const eventsWithStatus = rawEvents.map((e) => {
+    const uiStatus: "SUCCESS" | "FAILED" | "DENIED" =
+      e.status === "SUCCESS" ? "SUCCESS" :
+      e.status === "FAILED" ? "FAILED" :
+      "DENIED"; // INVALID → DENIED for UI compat
+    const severity = e.status === "SUCCESS" ? "INFO" : e.status === "FAILED" ? "WARN" : "ERROR";
+    return {
+      id: e.id,
+      eventType: "log.line",
+      severity,
+      source: `ssh:${e.username}@${e.sourceIp}`,
+      message: e.raw ?? `${e.status} for ${e.username} from ${e.sourceIp}`,
+      rawData: {
+        username: e.username,
+        ip: e.sourceIp,
+        status: e.status,
+        method: e.method,
+      },
+      eventTime: e.eventTime,
+      count: e.count,
+      agent: e.agent,
+      status: uiStatus,
+    };
+  });
 
   const statusCounts: Record<EventStatus, number> = {
     SUCCESS: 0,
@@ -356,11 +380,13 @@ export default async function ServerEventsPage({
   const events = filtered.slice(0, 100);
 
   // Serialize for client component — Date → ISO string
+  // Agent can be null (asset-side events have no agent), so coalesce to a placeholder.
   const initialData: ServerEventsData = {
     events: events.map((e) => ({
       ...e,
       eventTime: e.eventTime.toISOString(),
       rawData: e.rawData as any,
+      agent: e.agent ?? { name: "unknown", hostname: null, ip: null },
     })),
     total,
     displayed: events.length,
@@ -378,11 +404,11 @@ export default async function ServerEventsPage({
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Server Events
+            Server Auth
           </h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            System logs (syslog, sudo, kernel, nginx, dll) dari agent-installed
-            servers
+            SSH login events, sudo, cron dari /var/log/auth.log &amp; /var/log/secure.
+            Syslog, nginx &amp; kernel punya menu masing-masing (Syslog, Apps).
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">

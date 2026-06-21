@@ -53,7 +53,15 @@ export async function GET(_req: NextRequest) {
       registeredAt: true,
       revokedAt: true,
       eventsSent: true,
-      _count: { select: { events: true } },
+      _count: {
+        select: {
+          syslogEvents: true,
+          serverAuthEvents: true,
+          fimEvents: true,
+          auditdEvents: true,
+          appEvents: true,
+        },
+      },
     },
   });
 

@@ -65,7 +65,7 @@ type Asset = {
   discoveredDatabases?: string[] | null;
   lastDiscoveryAt?: Date | string | null;
   auditConnectionLog?: boolean;
-  _count: { dbEvents: number };
+  _count: { databaseEvents: number };
 };
 
 type SortKey = "status" | "name" | "env" | "type" | "events" | "created";
@@ -157,8 +157,8 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
           bv = b.dbType;
           break;
         case "events":
-          av = a._count.dbEvents;
-          bv = b._count.dbEvents;
+          av = a._count.databaseEvents;
+          bv = b._count.databaseEvents;
           break;
         case "created":
           av = new Date(a.createdAt).getTime();
@@ -457,7 +457,7 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                         className="font-mono text-[11px] text-[var(--primary)] hover:underline"
                         title="View events for this asset"
                       >
-                        {a._count.dbEvents.toLocaleString()}
+                        {a._count.databaseEvents.toLocaleString()}
                       </Link>
                     </td>
                     {/* Created */}
@@ -532,7 +532,7 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
             hostname: deleteTarget.hostname,
             environment: deleteTarget.environment,
             dbType: deleteTarget.dbType,
-            eventCount: deleteTarget._count.dbEvents,
+            eventCount: deleteTarget._count.databaseEvents,
           }}
           onClose={() => setDeleteTarget(null)}
           onDeleted={() => {

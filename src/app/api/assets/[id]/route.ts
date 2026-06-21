@@ -207,7 +207,7 @@ export async function DELETE(
       environment: true,
       dbType: true,
       dbCredentials: { select: { id: true } },
-      _count: { select: { dbEvents: true } },
+      _count: { select: { databaseEvents: true } },
     },
   });
   if (!existing) {
@@ -240,7 +240,7 @@ export async function DELETE(
     deleted: {
       id,
       displayName: existing.displayName,
-      eventsPreserved: existing._count.dbEvents,
+      eventsPreserved: existing._count.databaseEvents,
       credentialsDeleted: existing.dbCredentials ? 1 : 0,
     },
   });

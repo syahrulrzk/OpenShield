@@ -15,16 +15,13 @@ import { redirect } from "next/navigation";
  * FAILED: severity = ERROR + message contains "login failed"
  */
 async function getAgentServerStats(userId: string, today: Date, last24h: Date, last7d: Date) {
-  // Agents don't have userId filter (global agents table)
-  const sshEvents = await prisma.agentEvent.findMany({
-    where: {
-      source: { contains: 'auth.log' },
-      eventTime: { gte: last24h },
-    },
+  // 2026-06-21 refactor: tEventLogServerAuth already has status enum.
+  // Just count SUCCESS vs FAILED directly — no more regex matching!
+  const sshEvents = await prisma.tEventLogServerAuth.findMany({
+    where: { eventTime: { gte: last24h } },
     select: {
-      severity: true,
-      message: true,
-      rawData: true,
+      status: true,
+      sourceIp: true,
       eventTime: true,
     },
   });
@@ -38,8 +35,8 @@ async function getAgentServerStats(userId: string, today: Date, last24h: Date, l
   const hourlyBuckets: Record<string, { success: number; failed: number }> = {};
 
   for (const e of sshEvents) {
-    const isSuccess = e.message.includes('login OK') || e.severity === 'INFO' && e.message.includes('Accepted');
-    const isFailed = e.message.includes('login failed') || e.severity === 'ERROR';
+    const isSuccess = e.status === "SUCCESS";
+    const isFailed = e.status === "FAILED" || e.status === "INVALID";
     const hour = new Date(e.eventTime).toISOString().slice(0, 13) + ':00:00Z';
 
     if (!hourlyBuckets[hour]) hourlyBuckets[hour] = { success: 0, failed: 0 };
@@ -53,10 +50,9 @@ async function getAgentServerStats(userId: string, today: Date, last24h: Date, l
       failed24h++;
       if (e.eventTime >= today) failedToday++;
 
-      // Extract IP from raw_data
-      const rd = e.rawData as any;
-      if (rd?.ip) {
-        ipCounts[rd.ip] = (ipCounts[rd.ip] || 0) + 1;
+      // IP is a first-class column now
+      if (e.sourceIp) {
+        ipCounts[e.sourceIp] = (ipCounts[e.sourceIp] || 0) + 1;
       }
     }
   }
@@ -90,8 +86,8 @@ async function getStats(userId: string) {
   // which is global. So we probe each legacy table once; if empty, fall back
   // to `agentEvent` (already implements all the parsing we need).
   const [serverEventCount24h, dbEventCount24h] = await Promise.all([
-    prisma.serverEvent.count({ where: { eventTime: { gte: last24h } } }),
-    prisma.dbEvent.count({ where: { eventTime: { gte: last24h } } }),
+    prisma.tEventLogServerAuth.count({ where: { eventTime: { gte: last24h } } }),
+    prisma.tEventLogDatabase.count({ where: { eventTime: { gte: last24h } } }),
   ]);
   const useAgentFallback = serverEventCount24h === 0;
   const useDbFallback = dbEventCount24h === 0;
@@ -144,18 +140,18 @@ async function getStats(userId: string) {
     // Server stats: use server_events if available, fallback to agent_events
     useAgentFallback
       ? Promise.resolve(agentStats!.successToday)
-      : prisma.serverEvent.count({ where: { asset: { userId }, status: "SUCCESS", eventTime: { gte: today } } }),
+      : prisma.tEventLogServerAuth.count({ where: { asset: { userId }, status: "SUCCESS", eventTime: { gte: today } } }),
     useAgentFallback
       ? Promise.resolve(agentStats!.failedToday)
-      : prisma.serverEvent.count({ where: { asset: { userId }, status: { in: ["FAILED", "INVALID"] }, eventTime: { gte: today } } }),
+      : prisma.tEventLogServerAuth.count({ where: { asset: { userId }, status: { in: ["FAILED", "INVALID"] }, eventTime: { gte: today } } }),
     useAgentFallback
       ? Promise.resolve(agentStats!.success24h + agentStats!.failed24h)
-      : prisma.serverEvent.count({ where: { asset: { userId }, eventTime: { gte: last24h } } }),
+      : prisma.tEventLogServerAuth.count({ where: { asset: { userId }, eventTime: { gte: last24h } } }),
 
-    prisma.dbEvent.count({ where: { asset: { userId }, status: "SUCCESS", eventTime: { gte: today } } }),
-    prisma.dbEvent.count({ where: { asset: { userId }, status: { in: ["FAILED", "DENIED"] }, eventTime: { gte: today } } }),
-    prisma.dbEvent.count({ where: { asset: { userId }, eventTime: { gte: last24h } } }),
-    prisma.dbEvent.groupBy({ by: ["dbType"], where: { asset: { userId }, eventTime: { gte: last24h } }, _count: { dbType: true } }),
+    prisma.tEventLogDatabase.count({ where: { asset: { userId }, status: "SUCCESS", eventTime: { gte: today } } }),
+    prisma.tEventLogDatabase.count({ where: { asset: { userId }, status: { in: ["FAILED", "DENIED"] }, eventTime: { gte: today } } }),
+    prisma.tEventLogDatabase.count({ where: { asset: { userId }, eventTime: { gte: last24h } } }),
+    prisma.tEventLogDatabase.groupBy({ by: ["dbType"], where: { asset: { userId }, eventTime: { gte: last24h } }, _count: { dbType: true } }),
 
     prisma.alert.count({ where: { status: "OPEN" } }),
     prisma.alert.count({ where: { severity: "CRITICAL", status: "OPEN" } }),
@@ -165,7 +161,7 @@ async function getStats(userId: string) {
       ? Promise.resolve(agentStats!.topAttackers)
       : prisma.$queryRaw<{ source_ip: string; failedCount: bigint }[]>`
         SELECT e.source_ip, COUNT(*) as "failedCount"
-        FROM server_events e
+        FROM t_event_log_server_auth e
         JOIN assets a ON e.asset_id = a.id
         WHERE a.user_id = ${userId} AND e.status IN ('FAILED','INVALID') AND e.event_time >= ${last7d}
         GROUP BY e.source_ip
@@ -174,7 +170,7 @@ async function getStats(userId: string) {
       `,
     prisma.$queryRaw<{ source_ip: string; failedCount: bigint; dbType: string }[]>`
       SELECT e.source_ip, e.db_type, COUNT(*) as "failedCount"
-      FROM db_events e
+      FROM t_event_log_database e
       JOIN assets a ON e.asset_id = a.id
       WHERE a.user_id = ${userId} AND e.status IN ('FAILED','DENIED') AND e.event_time >= ${last7d}
       GROUP BY e.source_ip, e.db_type
@@ -183,7 +179,7 @@ async function getStats(userId: string) {
     `,
     prisma.$queryRaw<{ country: string; count: bigint }[]>`
       SELECT country, COUNT(*) as count
-      FROM server_events
+      FROM t_event_log_server_auth
       WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${userId})
         AND country IS NOT NULL
         AND event_time >= ${last7d}
@@ -197,7 +193,7 @@ async function getStats(userId: string) {
         SELECT date_trunc('hour', event_time) as hour,
           COUNT(*) FILTER (WHERE status = 'SUCCESS') as success,
           COUNT(*) FILTER (WHERE status IN ('FAILED','INVALID')) as failed
-        FROM server_events
+        FROM t_event_log_server_auth
         WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${userId})
           AND event_time >= ${last24h}
         GROUP BY hour
@@ -209,26 +205,24 @@ async function getStats(userId: string) {
         SELECT date_trunc('hour', event_time) as hour,
           COUNT(*) FILTER (WHERE status = 'SUCCESS') as success,
           COUNT(*) FILTER (WHERE status IN ('FAILED','DENIED')) as failed
-        FROM db_events
+        FROM t_event_log_database
         WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ${userId})
           AND event_time >= ${last24h}
         GROUP BY hour
         ORDER BY hour ASC
       `,
-    useAgentFallback
-      ? prisma.agentEvent.findMany({
-          where: { source: { contains: "auth.log" } },
-          orderBy: { eventTime: "desc" },
-          take: 8,
-          include: { agent: { select: { name: true, hostname: true } } },
-        })
-      : prisma.serverEvent.findMany({
-          where: { asset: { userId } },
-          orderBy: { eventTime: "desc" },
-          take: 8,
-          include: { asset: { select: { hostname: true } } },
-        }),
-    prisma.dbEvent.findMany({
+    // 2026-06-21: tEventLogServerAuth is unified table (agent OR asset).
+    // No more source/contains filter needed — table IS the auth filter.
+    prisma.tEventLogServerAuth.findMany({
+      where: { eventTime: { gte: last24h } },
+      orderBy: { eventTime: "desc" },
+      take: 8,
+      include: {
+        agent: { select: { name: true, hostname: true } },
+        asset: { select: { hostname: true } },
+      },
+    }),
+    prisma.tEventLogDatabase.findMany({
       where: { asset: { userId } },
       orderBy: { eventTime: "desc" },
       take: 8,

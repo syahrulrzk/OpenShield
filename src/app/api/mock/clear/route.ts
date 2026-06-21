@@ -60,9 +60,9 @@ export async function DELETE(req: NextRequest) {
     const assetIds = mockAssets.map((a) => a.id);
 
     // First, count alerts that will be deleted
-    const [serverEventsCount, dbEventsCount, alertsCount] = await Promise.all([
-      prisma.serverEvent.count({ where: { assetId: { in: assetIds } } }),
-      prisma.dbEvent.count({ where: { assetId: { in: assetIds } } }),
+    const [serverAuthCount, databaseEventsCount, alertsCount] = await Promise.all([
+      prisma.tEventLogServerAuth.count({ where: { assetId: { in: assetIds } } }),
+      prisma.tEventLogDatabase.count({ where: { assetId: { in: assetIds } } }),
       // For alerts: in batched mode, count via JSON path on metadata.mockBatchId.
       // In "all mock" mode, count alerts that have a mockBatchId set (any value).
       batchId
@@ -116,8 +116,8 @@ export async function DELETE(req: NextRequest) {
       batchId: batchId ?? null,
       deleted: {
         assets: assetIds.length,
-        serverEvents: serverEventsCount,
-        dbEvents: dbEventsCount,
+        serverEvents: serverAuthCount,
+        dbEvents: databaseEventsCount,
         alerts: alertsCount,
       },
     });

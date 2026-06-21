@@ -18,13 +18,12 @@ import type { Prisma } from "@prisma/client";
 import { subHours, subDays } from "date-fns";
 import { parseDateFromQuery, parseIpFromQuery } from "@/lib/search/query-parsers";
 
-// Server-side log paths (everything except SSH login auth.log/secure)
+// Server Auth sources — login/auth-related logs only.
+// Syslog goes to /dashboard/events/syslog (see SYSLOG_SOURCES below).
+// Web server access/error logs stay here as a temporary home until the
+// Apps sub-page is built (they're not auth, but no other home yet).
 const SERVER_SOURCES = [
-  "/var/log/syslog",
-  "/var/log/messages",
-  "/var/log/kern.log",
-  "/var/log/dmesg",
-  "/var/log/auth.log", // kept here too — SSH is filtered at display time
+  "/var/log/auth.log",
   "/var/log/secure",
   "/var/log/sudo.log",
   "/var/log/cron.log",
@@ -43,9 +42,15 @@ const SYSLOG_SOURCES = [
   "/var/log/messages.1",
 ] as const;
 
-const SOURCE_TYPE_MAP: Record<string, readonly string[]> = {
+// FIM (File Integrity Monitoring) events don't match by source path —
+// they're identified by eventType=file.change (source IS the file path).
+// Returning a sentinel lets SOURCE_TYPE_MAP carry a hint without forcing
+// every source to be in some allowlist.
+const FIM_SENTINEL = "__FIM__" as const;
+
+const SOURCE_TYPE_MAP: Record<string, readonly string[] | typeof FIM_SENTINEL> = {
   syslog: SYSLOG_SOURCES,
-  // future: apps, auditd, fim — each gets its own subset
+  fim: FIM_SENTINEL,
 };
 
 function isServerEvent(source: string): boolean {
@@ -120,166 +125,167 @@ export async function GET(req: NextRequest) {
           ? subDays(new Date(), 7)
           : subDays(new Date(), 1);
 
-  // Base WHERE — audit trail: by default exclude events from revoked agents.
-  // Admins can opt-in to seeing them via ?hideRevoked=0 (rare, for forensics).
-  // If sourceType is set (e.g. "syslog"), restrict source to the subset.
-  const baseWhere: Prisma.AgentEventWhereInput = {
-    eventType: "log.line",
+  // 2026-06-21 refactor: agentEvent table split into 6 per-type tables.
+  // This endpoint serves server_auth events (sshd + sudo + nginx/apache auth).
+  // Other source types (syslog/fim) have their own sub-pages now.
+  // We dispatch to the right table based on scopedSources.
+  const isFimOnly = scopedSources === FIM_SENTINEL;
+
+  // Field-path filters still need rawData JSONB access — those go to the
+  // tEventLogServerAuth table for sshd events (rawData has ip/user/event).
+  // For now, we query tEventLogServerAuth (the unified sshd+auth table).
+  const baseWhere: Prisma.TEventLogServerAuthWhereInput = {
     eventTime: { gte: since },
-    ...(scopedSources ? { source: { in: [...scopedSources] } } : {}),
     ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
   };
 
   // Build search filters (date / IP / text → user/ip/message/source)
-  const andClauses: Prisma.AgentEventWhereInput[] = [];
+  const andClauses: Prisma.TEventLogServerAuthWhereInput[] = [];
   const dateRange = parseDateFromQuery(q);
   if (dateRange) andClauses.push({ eventTime: dateRange });
   const ipMatch = parseIpFromQuery(q);
   if (ipMatch) {
     andClauses.push({
-      rawData: { path: ["ip"], string_contains: ipMatch },
+      OR: [
+        { sourceIp: { contains: ipMatch } },
+        { raw: { contains: ipMatch } },
+      ],
     });
   }
-  // Text search across message/source/user — skip if q is purely a date or IP
-  // (the dateRange/ipMatch filter alone is sufficient and the text-search OR
-  // would otherwise exclude everything when q doesn't appear in any field).
+  // Text search across raw (was message), sourceIp, username
   if (q) {
-    // Strip dates and IPs from q — they're handled by dedicated filters
-    // (dateRange above + ipMatch above). Otherwise the text-search OR would
-    // exclude everything when "2026-06-19" doesn't appear in message/source/user.
     const stripped = q
       .replace(/\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g, "")
       .replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}\b/g, "")
       .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "")
       .trim();
-
-    // Tokenize: each whitespace-separated token becomes one AND clause with
-    // internal OR (matches any searchable field). Supports `field:value` prefix
-    // to scope a token to a specific field.
-    //
-    // Examples:
-    //   "ucok"                     → matches ucok in any field
-    //   "dev_cona ucok"            → matches events that have BOTH dev_cona
-    //                                AND ucok somewhere in searchable fields
-    //   "agent:dev_cona user:ucok" → strict: agent.name AND rawData.user
-    //   "agent:linux-host failed"  → from linux-host AND message/source/...
-    //                                contains "failed"
-    const tokens = stripped.split(/\s+/).filter((t) => t.length > 0);
-
-    for (const token of tokens) {
-      const fieldMatch = token.match(/^([a-zA-Z]+):(.+)$/);
-      if (fieldMatch) {
-        const [, field, value] = fieldMatch;
-        const v = value.trim();
-        if (!v) continue;
-        switch (field.toLowerCase()) {
-          case "agent":
-            andClauses.push({
-              OR: [
-                { agent: { name: { contains: v, mode: "insensitive" } } },
-                { agent: { hostname: { contains: v, mode: "insensitive" } } },
-              ],
-            });
-            break;
-          case "user":
-          case "username":
-            andClauses.push({
-              OR: [
-                { rawData: { path: ["user"], string_contains: v } },
-                { rawData: { path: ["username"], string_contains: v } },
-              ],
-            });
-            break;
-          case "source":
-            andClauses.push({ source: { contains: v, mode: "insensitive" } });
-            break;
-          case "service":
-            // Matches rawData.service exactly (case-insensitive) so the user can
-            // search e.g. `service:SFTP` or `service:ssh`. Falls back to a contains
-            // on rawData.service in case the field is unset/typed differently.
-            andClauses.push({
-              rawData: { path: ["service"], string_contains: v },
-            });
-            // Also try common field name variants
-            andClauses.push({
-              OR: [
-                { rawData: { path: ["service"], equals: v.toUpperCase() } },
-                { rawData: { path: ["service"], equals: v.toLowerCase() } },
-              ],
-            });
-            break;
-          case "msg":
-          case "message":
-            andClauses.push({ message: { contains: v, mode: "insensitive" } });
-            break;
-          case "ip":
-            andClauses.push({
-              OR: [
-                { rawData: { path: ["ip"], string_contains: v } },
-                { message: { contains: v } },
-              ],
-            });
-            break;
-          default:
-            // Unknown field prefix → fall through to generic OR
-            andClauses.push({
-              OR: [
-                { message: { contains: token, mode: "insensitive" } },
-                { source: { contains: token, mode: "insensitive" } },
-                { rawData: { path: ["user"], string_contains: token } },
-                { rawData: { path: ["username"], string_contains: token } },
-                { rawData: { path: ["service"], string_contains: token } },
-                { agent: { name: { contains: token, mode: "insensitive" } } },
-                { agent: { hostname: { contains: token, mode: "insensitive" } } },
-              ],
-            });
+    if (stripped) {
+      const tokens = stripped.split(/\s+/).filter((t) => t.length > 0);
+      for (const token of tokens) {
+        const fieldMatch = token.match(/^([a-zA-Z]+):(.+)$/);
+        if (fieldMatch) {
+          const [, field, value] = fieldMatch;
+          const v = value.trim();
+          if (!v) continue;
+          switch (field.toLowerCase()) {
+            case "agent":
+              andClauses.push({
+                OR: [
+                  { agent: { name: { contains: v, mode: "insensitive" } } },
+                  { agent: { hostname: { contains: v, mode: "insensitive" } } },
+                ],
+              });
+              break;
+            case "user":
+            case "username":
+              andClauses.push({ username: { contains: v, mode: "insensitive" } });
+              break;
+            case "ip":
+              andClauses.push({
+                OR: [
+                  { sourceIp: { contains: v } },
+                  { raw: { contains: v } },
+                ],
+              });
+              break;
+            case "msg":
+            case "message":
+              andClauses.push({ raw: { contains: v, mode: "insensitive" } });
+              break;
+            default:
+              andClauses.push({
+                OR: [
+                  { raw: { contains: token, mode: "insensitive" } },
+                  { username: { contains: token, mode: "insensitive" } },
+                  { sourceIp: { contains: token } },
+                  { agent: { name: { contains: token, mode: "insensitive" } } },
+                  { agent: { hostname: { contains: token, mode: "insensitive" } } },
+                ],
+              });
+          }
+        } else {
+          andClauses.push({
+            OR: [
+              { raw: { contains: token, mode: "insensitive" } },
+              { username: { contains: token, mode: "insensitive" } },
+              { sourceIp: { contains: token } },
+              { agent: { name: { contains: token, mode: "insensitive" } } },
+              { agent: { hostname: { contains: token, mode: "insensitive" } } },
+            ],
+          });
         }
-      } else {
-        // No field prefix → match against any searchable field
-        andClauses.push({
-          OR: [
-            { message: { contains: token, mode: "insensitive" } },
-            { source: { contains: token, mode: "insensitive" } },
-            { rawData: { path: ["user"], string_contains: token } },
-            { rawData: { path: ["username"], string_contains: token } },
-            { rawData: { path: ["service"], string_contains: token } },
-            { agent: { name: { contains: token, mode: "insensitive" } } },
-            { agent: { hostname: { contains: token, mode: "insensitive" } } },
-          ],
-        });
       }
     }
   }
-  const where: Prisma.AgentEventWhereInput = {
+  const where: Prisma.TEventLogServerAuthWhereInput = {
     ...baseWhere,
     ...(andClauses.length > 0 ? { AND: andClauses } : {}),
   };
 
+  // Skip FIM queries on this endpoint — they should hit /api/events/fim
+  if (isFimOnly) {
+    return NextResponse.json({
+      events: [],
+      total: 0,
+      displayed: 0,
+      filteredTotal: 0,
+      statusCounts: { SUCCESS: 0, FAILED: 0, DENIED: 0 },
+      statusFilter: statusFilter ?? "all",
+      range,
+      q,
+      hideRevoked,
+      note: "FIM events have their own endpoint — see /api/events/fim",
+    });
+  }
+
   const [rawEvents, total] = await Promise.all([
-    prisma.agentEvent.findMany({
+    prisma.tEventLogServerAuth.findMany({
       where,
       orderBy: { eventTime: "desc" },
       take: 500,
       select: {
         id: true,
-        eventType: true,
-        severity: true,
-        source: true,
-        message: true,
-        rawData: true,
+        username: true,
+        sourceIp: true,
+        status: true,
+        method: true,
+        country: true,
+        raw: true,
         eventTime: true,
         count: true,
         agent: { select: { name: true, hostname: true, ip: true } },
       },
     }),
-    prisma.agentEvent.count({ where: baseWhere }),
+    prisma.tEventLogServerAuth.count({ where: baseWhere }),
   ]);
 
-  const serverEvents = rawEvents.filter((e) => isServerEvent(e.source));
-  const eventsWithStatus = serverEvents.map((e) => ({
-    ...e,
-    status: getEventStatus(e.severity, e.message),
-  }));
+  // 2026-06-21 refactor: events already come from tEventLogServerAuth (auth-only).
+  // No need to filter by source — the table IS the auth filter.
+  // Map status directly (tEventLogServerAuth.status is ServerStatus enum).
+  // Map INVALID → "DENIED" for backward compat with UI status filter.
+  const eventsWithStatus = rawEvents.map((e) => {
+    const uiStatus: "SUCCESS" | "FAILED" | "DENIED" =
+      e.status === "SUCCESS" ? "SUCCESS" :
+      e.status === "FAILED" ? "FAILED" :
+      "DENIED"; // INVALID → DENIED for UI compat
+    return {
+      id: e.id,
+      eventType: "log.line",
+      severity: e.status === "SUCCESS" ? "INFO" : e.status === "FAILED" ? "WARN" : "ERROR",
+      source: `ssh:${e.username}@${e.sourceIp}`,
+      message: e.raw ?? `${e.status} for ${e.username} from ${e.sourceIp}`,
+      rawData: {
+        username: e.username,
+        ip: e.sourceIp,
+        status: e.status,
+        method: e.method,
+      },
+      eventTime: e.eventTime,
+      count: e.count,
+      agent: e.agent,
+      status: uiStatus,
+    };
+  });
 
   const statusCounts: Record<EventStatus, number> = {
     SUCCESS: 0,

@@ -84,7 +84,7 @@ export default async function DatabaseEventsPage({
   };
   const [events, total, successCount, failedCount, deniedCount, dbTypeCounts, envCounts, assets] =
     await Promise.all([
-      prisma.dbEvent.findMany({
+      prisma.tEventLogDatabase.findMany({
         where,
         orderBy: { eventTime: "desc" },
         take: 100,
@@ -100,11 +100,11 @@ export default async function DatabaseEventsPage({
           asset: { select: { hostname: true, environment: true } },
         },
       }),
-      prisma.dbEvent.count({ where: baseWhere }),
-      prisma.dbEvent.count({ where: { ...baseWhere, status: "SUCCESS" } }),
-      prisma.dbEvent.count({ where: { ...baseWhere, status: "FAILED" } }),
-      prisma.dbEvent.count({ where: { ...baseWhere, status: "DENIED" } }),
-      prisma.dbEvent.groupBy({
+      prisma.tEventLogDatabase.count({ where: baseWhere }),
+      prisma.tEventLogDatabase.count({ where: { ...baseWhere, status: "SUCCESS" } }),
+      prisma.tEventLogDatabase.count({ where: { ...baseWhere, status: "FAILED" } }),
+      prisma.tEventLogDatabase.count({ where: { ...baseWhere, status: "DENIED" } }),
+      prisma.tEventLogDatabase.groupBy({
         by: ["dbType"],
         where: baseWhere,
         _count: { _all: true },
@@ -137,7 +137,7 @@ export default async function DatabaseEventsPage({
           discoveredDatabases: true,
           lastDiscoveryAt: true,
           auditConnectionLog: true,
-          _count: { select: { dbEvents: true } },
+          _count: { select: { databaseEvents: true } },
         },
       }),
     ]);
