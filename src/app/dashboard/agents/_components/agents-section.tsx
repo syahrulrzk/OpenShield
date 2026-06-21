@@ -23,7 +23,6 @@ import {
   Code,
   Eye,
   EyeOff,
-  Network,
   Search,
   ArrowUpCircle, // Update Agent button icon
   ChevronRight,
@@ -209,23 +208,7 @@ export function AgentsSection() {
   const revokedAgents = agents.filter((a) => a.effectiveStatus === "REVOKED");
   const visibleAgents = showRevoked ? agents : activeAgents;
 
-  // ── Resync IP ─────────────────────────────────────────────────
-  // Admin override: rewrite the agent row's IP from the dashboard.
-  // Useful when an agent is stuck reporting a public/NAT IP and the
-  // owner wants to fix the display without SSHing into the host.
-  // The next heartbeat will overwrite this if the agent is still
-  // running with the old detection logic — pair with a service
-  // restart on the host for a permanent fix.
-  const [resyncTarget, setResyncTarget] = useState<Agent | null>(null);
-  const [resyncIp, setResyncIp] = useState("");
-  const [resyncBusy, setResyncBusy] = useState(false);
-  const [resyncErr, setResyncErr] = useState<string | null>(null);
-
-  const openResync = (a: Agent) => {
-    setResyncTarget(a);
-    setResyncIp(a.ip ?? "");
-    setResyncErr(null);
-  };
+  // ── Edit Agent ────────────────────────────────────────────────
 
   // ── Edit name + environment ────────────────────────────────
   // Two cosmetic fields admins frequently want to fix:
@@ -305,32 +288,6 @@ export function AgentsSection() {
     setUpdateCommandCopied(true);
     toast.success("Update command copied to clipboard");
     setTimeout(() => setUpdateCommandCopied(false), 2000);
-  };
-
-  const submitResync = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!resyncTarget) return;
-    setResyncBusy(true);
-    setResyncErr(null);
-    try {
-      const r = await fetch(`/api/agents/${resyncTarget.id}`, {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip: resyncIp.trim() }),
-      });
-      const data = await r.json();
-      if (data.ok) {
-        setResyncTarget(null);
-        load();
-      } else {
-        setResyncErr(data.error || "Failed to update IP");
-      }
-    } catch (e) {
-      setResyncErr(String(e));
-    } finally {
-      setResyncBusy(false);
-    }
   };
 
   // ── Filters ──────────────────────────────────────────────────────
@@ -785,13 +742,6 @@ export function AgentsSection() {
                               <Pencil className="w-4 h-4" />
                             </button>
                             <button
-                              onClick={() => openResync(a)}
-                              className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-cyan-400"
-                              title={`Resync IP (currently ${a.ip ?? "—"})`}
-                            >
-                              <Network className="w-4 h-4" />
-                            </button>
-                            <button
                               onClick={() => rotate(a)}
                               className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-emerald-400"
                               title="Rotate token (issue new, old becomes invalid)"
@@ -980,81 +930,6 @@ export function AgentsSection() {
                     </>
                   ) : (
                     "Save Changes"
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {resyncTarget && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
-                <Network className="w-5 h-5 text-cyan-400" />
-                Resync Agent IP
-              </h2>
-              <button
-                onClick={() => setResyncTarget(null)}
-                className="p-1 rounded hover:bg-zinc-800 text-zinc-500"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-xs text-zinc-500 mb-4">
-              <span className="font-mono text-zinc-300">{resyncTarget.name}</span>{" "}
-              <span className="text-zinc-600">·</span>{" "}
-              <span className="font-mono">{resyncTarget.hostname ?? "—"}</span>
-            </p>
-            <form onSubmit={submitResync} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">
-                  New IPv4 address
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={resyncIp}
-                  onChange={(e) => setResyncIp(e.target.value)}
-                  placeholder="172.16.19.235"
-                  pattern="^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"
-                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-100 text-sm font-mono focus:outline-none focus:border-cyan-500"
-                />
-                <p className="text-[10px] text-zinc-600 mt-1.5">
-                  This updates the agent row in the DB. If the agent is still
-                  running with old detection logic, the next heartbeat
-                  (≤30s) will overwrite this — pair with{" "}
-                  <span className="font-mono">systemctl restart openshield-agent</span>{" "}
-                  on the host for a permanent fix.
-                </p>
-              </div>
-              {resyncErr && (
-                <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
-                  {resyncErr}
-                </div>
-              )}
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setResyncTarget(null)}
-                  className="flex-1 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={resyncBusy}
-                  className="flex-1 px-3 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-zinc-950 text-sm font-medium flex items-center justify-center gap-1.5"
-                >
-                  {resyncBusy ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Updating…
-                    </>
-                  ) : (
-                    "Update IP"
                   )}
                 </button>
               </div>
