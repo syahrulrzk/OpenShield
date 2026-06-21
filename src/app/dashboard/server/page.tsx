@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import { getSession } from "@/lib/security/rbac";
+import { groupBySession } from "@/lib/server-auth-grouping";
 import {
   AlertTriangle,
   AlertCircle,
@@ -112,6 +113,12 @@ function getEventUser(rawData: unknown, message: string): string | null {
   if (userMatch) return userMatch[1];
   return null;
 }
+
+// Event priority for session-grouping: highest = most informative.
+// We keep the highest-priority event in the group as the primary row;
+// lower-priority events in the same group are summarised as
+// `sessionSubsessions` (e.g. "SFTP, command_session").
+// Implementation lives in `@/lib/server-auth-grouping` (shared with API route).
 
 function getEventIp(rawData: unknown, message: string): string | null {
   if (rawData && typeof rawData === "object" && !Array.isArray(rawData)) {
@@ -350,8 +357,16 @@ export default async function ServerEventsPage({
     prisma.tEventLogServerAuth.count({ where: baseWhere }),
   ]);
 
+  // Session grouping: 1 SSH session emits 3-5 events (connection, accepted,
+  // shell_session, sftp_session, scp_session, command_session). Showing all
+  // 5 rows for a single `ssh user@host` is noise. We group by (sourceIp,
+  // sourcePort) within a 5-minute window and keep the highest-priority event
+  // (accepted > sftp/scp/shell_session > command_session > connection).
+  // Other events in the same group are summarised in `sessionSubsessions`.
+  const grouped = groupBySession(rawEvents);
+
   // Map tEventLogServerAuth → ServerEvent-like shape for ServerEventsContent
-  const eventsWithStatus = rawEvents.map((e) => {
+  const eventsWithStatus = grouped.map((e) => {
     const uiStatus: "SUCCESS" | "FAILED" | "DENIED" =
       e.status === "SUCCESS" ? "SUCCESS" :
       e.status === "FAILED" ? "FAILED" :
@@ -382,6 +397,11 @@ export default async function ServerEventsPage({
           : null,
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
+        // Session grouping metadata: how many events were merged and which
+        // subsession types (e.g. "sftp_session") were collapsed into this
+        // primary row. UI uses these to show a small "N events" badge.
+        sessionEventCount: e.sessionEventCount,
+        sessionSubsessions: e.sessionSubsessions,
       },
       eventTime: e.eventTime,
       count: e.count,

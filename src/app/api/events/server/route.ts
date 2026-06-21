@@ -17,6 +17,7 @@ import { prisma } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import { subHours, subDays } from "date-fns";
 import { parseDateFromQuery, parseIpFromQuery } from "@/lib/search/query-parsers";
+import { groupBySession, type RawServerAuthRow } from "@/lib/server-auth-grouping";
 
 // Server Auth sources — login/auth-related logs only.
 // Syslog goes to /dashboard/events/syslog (see SYSLOG_SOURCES below).
@@ -276,9 +277,13 @@ export async function GET(req: NextRequest) {
 
   // 2026-06-21 refactor: events already come from tEventLogServerAuth (auth-only).
   // No need to filter by source — the table IS the auth filter.
+  // Session grouping: 1 SSH session emits 3-6 events. Group by
+  // (sourceIp, sourcePort) and keep highest-priority event as primary.
+  const grouped = groupBySession(rawEvents as RawServerAuthRow[]);
+
   // Map status directly (tEventLogServerAuth.status is ServerStatus enum).
   // Map INVALID → "DENIED" for backward compat with UI status filter.
-  const eventsWithStatus = rawEvents.map((e) => {
+  const eventsWithStatus = grouped.map((e) => {
     const uiStatus: "SUCCESS" | "FAILED" | "DENIED" =
       e.status === "SUCCESS" ? "SUCCESS" :
       e.status === "FAILED" ? "FAILED" :
@@ -313,6 +318,11 @@ export async function GET(req: NextRequest) {
           : null,
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
+        // Session grouping metadata: how many events were merged and which
+        // subsession types (e.g. "sftp_session") were collapsed into this
+        // primary row. UI shows "SFTP" badge + count for visibility.
+        sessionEventCount: e.sessionEventCount,
+        sessionSubsessions: e.sessionSubsessions,
       },
       eventTime: e.eventTime,
       count: e.count,

@@ -651,6 +651,24 @@ export function ServerEventsContent({
                                   ×{e.count}
                                 </span>
                               )}
+                              {(() => {
+                                const rd = (e.rawData ?? {}) as Record<string, unknown>;
+                                const sessCount = typeof rd.sessionEventCount === "number" ? rd.sessionEventCount : 1;
+                                const subs = Array.isArray(rd.sessionSubsessions) ? rd.sessionSubsessions as string[] : [];
+                                if (sessCount <= 1 && subs.length === 0) return null;
+                                return (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-violet-500/15 text-violet-300 border border-violet-500/30"
+                                    title={`${sessCount} events merged into 1 row (same SSH session, group by client port). Subsessions: ${subs.join(", ") || "none"}`}
+                                  >
+                                    <Activity className="h-2.5 w-2.5" />
+                                    {sessCount} {sessCount === 1 ? "event" : "events"}
+                                    {subs.length > 0 && (
+                                      <span className="opacity-70 ml-0.5">+{subs.length}</span>
+                                    )}
+                                  </span>
+                                );
+                              })()}
                             </span>
                           ) : (
                             <Dash />
