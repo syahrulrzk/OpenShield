@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -455,8 +455,16 @@ class SshdParser:
         r"Did not receive identification string from ([\d.]+)"
     )
     # "Connection closed by authenticating user testuser 10.0.0.5 port 51234 [preauth]"
+    # 2026-06-21 fix: VERBOSE sshd format is "Connection closed by IP port PORT" (no user).
+    # Old INFO format was "Connection closed by user USER IP port PORT" or with
+    # "authenticating user" prefix. Pattern is fragile. Use a more lenient regex
+    # that matches IP+port anchor and makes user truly optional.
     RE_CONN_CLOSED = re.compile(
-        r"Connection closed by (?:authenticating user )?(\S+)?\s*([\d.]+)?\s*port (\d+)"
+        r"Connection closed by "
+        r"(?:authenticating\s+user\s+(?P<user>\S+)\s+)?"
+        r"(?:invalid\s+user\s+(?P<invaliduser>\S+)\s+)?"
+        r"(?:user\s+(?P<user2>\S+)\s+)?"
+        r"(?P<ip>[\d.]+)\s+port\s+(?P<port>\d+)"
     )
     # "error: maximum authentication attempts exceeded for gm from 10.0.0.5 port 51234 ssh2"
     RE_MAX_AUTH = re.compile(
@@ -593,15 +601,24 @@ class SshdParser:
             }
         m = self.RE_CONN_CLOSED.search(line)
         if m:
-            user, ip, port = m.groups()
+            # user may be missing (VERBOSE format), or be a real user, or
+            # be an "invalid user" attempt — we capture the user from any
+            # of those variants.
+            user = (
+                m.group("user")
+                or m.group("user2")
+                or m.group("invaliduser")
+            )
+            ip = m.group("ip")
+            port = m.group("port")
             return {
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SSH connection closed: user={user or '?'}, ip={ip or '?'}",
+                "message": f"SSH connection closed: user={user or '?'}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.conn_closed",
-                    "user": user,
+                    "user": user,  # may be None for VERBOSE format
                     "ip": ip,
                     "port": int(port) if port else None,
                     "serverPort": self.sshd_port,  # SSH server port (implicit in auth.log)
