@@ -64,6 +64,7 @@ type Asset = {
   monitorAllDatabases?: boolean;
   discoveredDatabases?: string[] | null;
   lastDiscoveryAt?: Date | string | null;
+  auditConnectionLog?: boolean;
   _count: { dbEvents: number };
 };
 
@@ -411,6 +412,14 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
                             ALL
                           </span>
                         )}
+                        {a.auditConnectionLog && (
+                          <span
+                            className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                            title="Captures real-time connect/disconnect events from MySQL general_log table"
+                          >
+                            AUDIT
+                          </span>
+                        )}
                       </div>
                     </td>
                     {/* Host:Port */}
@@ -504,6 +513,8 @@ export function DatabaseAssetsTable({ assets }: { assets: Asset[] }) {
               : [],
             monitorAllDatabases: editTarget.monitorAllDatabases,
             discoveredDatabases: editTarget.discoveredDatabases,
+            auditConnectionLog: editTarget.auditConnectionLog,
+            dbType: editTarget.dbType,
           }}
           onClose={() => setEditTarget(null)}
           onUpdated={() => {

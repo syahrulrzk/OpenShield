@@ -41,6 +41,13 @@ export type DbPollResult = {
   ok: boolean;
   events: DbEventInput[];
   error?: string;
+  /**
+   * Microsecond-precision cursor for mysql.general_log.event_time.
+   * Only set by pollMysqlAuditLog() when ok=true.
+   * Persist to Asset.lastAuditEventId so the next cycle resumes
+   * exactly where we left off.
+   */
+  lastAuditEventId?: bigint;
 };
 
 /**
@@ -176,10 +183,12 @@ export async function pollMysql(params: {
     );
 
     for (const r of rows) {
-      // Parse "user@ip" from HOST
+      // Parse "user@ip" from HOST. MySQL processlist HOST is "IP:PORT"
+      // (e.g. "172.16.19.235:33812") so we split on the FIRST colon.
+      // Without this fix, sourceIp was recorded as the port number only.
       const hostStr = String(r.host ?? "");
-      const lastAt = hostStr.lastIndexOf(":");
-      const ip = lastAt > 0 ? hostStr.substring(lastAt + 1) : hostStr;
+      const firstColon = hostStr.indexOf(":");
+      const ip = firstColon > 0 ? hostStr.substring(0, firstColon) : hostStr;
       const user = String(r.user ?? "").split("@")[0];
 
       events.push({
@@ -287,7 +296,14 @@ export async function pollDatabase(params: {
   password: string;
   database: string;
   monitorAllDatabases?: boolean;
-}): Promise<DbPollResult & { discoveredDatabases?: string[] }> {
+  auditConnectionLog?: boolean;
+  lastAuditEventId?: bigint | null;
+}): Promise<
+  DbPollResult & {
+    discoveredDatabases?: string[];
+    lastAuditEventId?: bigint;
+  }
+> {
   // Multi-DB scan mode: list databases first, then poll each
   if (params.monitorAllDatabases) {
     return pollAllDatabases(params);
@@ -445,4 +461,188 @@ async function pollAllDatabases(params: {
     events: allEvents,
     discoveredDatabases: discovered,
   };
+}
+
+// ============================================================
+// MYSQL CONNECTION AUDIT LOG (mysql.general_log TABLE)
+// ============================================================
+
+/**
+ * Parse one row of mysql.general_log into one or more DbEvent inputs.
+ *
+ * Row shapes (MySQL 8.0):
+ *   - "user@host on  using SSL/TLS"          → CONNECT (success)
+ *   - "Access denied for user 'u'@'host' ..." → CONNECT (failure)
+ *   - "" (empty)                              → QUIT (disconnect)
+ *
+ * We deliberately IGNORE command_type='Query' rows — query bodies are
+ * never persisted to OpenShield (privacy + storage). Only auth events.
+ *
+ * MySQL's general_log.event_time is microsecond-precision DATETIME(6);
+ * we return a string ISO of that timestamp for stable dedup.
+ */
+function parseGeneralLogRow(row: {
+  event_time: Date;
+  user_host: string;
+  argument: string;
+}): DbEventInput[] {
+  const arg = String(row.argument ?? "");
+  const userHost = String(row.user_host ?? "");
+
+  // user_host format: "user[user] @ host [ip]" or "[user] @ host [ip]"
+  // Extract user (first bracket group) and IP (second bracket group).
+  const userMatch = userHost.match(/^(?:([^\[]+)\[)?([^\]]*)\]\s*@\s*(?:([^\[]+)\s*)?\[([^\]]+)\]/);
+  const username = userMatch?.[2] || "";
+  const sourceIp = userMatch?.[4] || undefined;
+
+  const isoTime =
+    row.event_time instanceof Date
+      ? row.event_time.toISOString()
+      : new Date(row.event_time).toISOString();
+
+  // Access denied → failure event
+  if (/Access denied/i.test(arg)) {
+    return [
+      {
+        dbType: "MYSQL",
+        username: username || "unknown",
+        sourceIp,
+        database: undefined,
+        status: "DENIED",
+        eventTime: isoTime,
+        raw: `mysql.general_log: ${arg.slice(0, 200)}`,
+      },
+    ];
+  }
+
+  // Successful connect
+  if (/^[^@]+@\S+\s+on\s+/i.test(arg) || /using (?:SSL\/TLS|UNIX socket)/i.test(arg)) {
+    return [
+      {
+        dbType: "MYSQL",
+        username: username || "unknown",
+        sourceIp,
+        database: undefined,
+        status: "SUCCESS",
+        eventTime: isoTime,
+        raw: `mysql.general_log: ${arg.slice(0, 200)}`,
+      },
+    ];
+  }
+
+  // Quit / disconnect
+  if (arg.trim() === "") {
+    return [
+      {
+        dbType: "MYSQL",
+        username: username || "unknown",
+        sourceIp,
+        database: undefined,
+        status: "SUCCESS",
+        eventTime: isoTime,
+        raw: "mysql.general_log: connection closed",
+      },
+    ];
+  }
+
+  // Anything else (Query command etc.) — intentionally skipped
+  return [];
+}
+
+/**
+ * Poll MySQL connection audit log (mysql.general_log TABLE mode).
+ *
+ * Reads new Connect/Quit/Access-denied rows since `lastAuditEventId`
+ * (microsecond cursor). Requires manual setup on target MySQL:
+ *   SET GLOBAL log_output='TABLE';
+ *   SET GLOBAL general_log='ON';
+ *
+ * Returns events + the new cursor (last event_time microseconds) so
+ * the caller can persist it for the next cycle.
+ */
+export async function pollMysqlAuditLog(params: {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  lastAuditEventId?: bigint | null;
+}): Promise<
+  DbPollResult & { lastAuditEventId?: bigint }
+> {
+  let conn: mysql.Connection | null = null;
+  const events: DbEventInput[] = [];
+  try {
+    conn = await mysql.createConnection({
+      host: params.host,
+      port: params.port,
+      user: params.user,
+      password: params.password,
+      database: params.database,
+      connectTimeout: 10_000,
+    });
+
+    // Convert lastAuditEventId (microseconds since epoch) → Date filter.
+    // mysql.general_log.event_time is DATETIME(6) so we filter by
+    // event_time > lastSeen with a 1-second safety margin.
+    let cursorClause = "";
+    const cursorParams: (Date | string | number)[] = [];
+    if (params.lastAuditEventId != null) {
+      const cursorMs = Number(params.lastAuditEventId) / 1000;
+      const cursorDate = new Date(cursorMs - 1000); // 1s safety margin
+      cursorClause = "AND event_time > ?";
+      cursorParams.push(cursorDate);
+    }
+
+    // Limit to Connect/Quit only; skip Query events (privacy + perf).
+    const [rows] = await conn.query<mysql.RowDataPacket[]>(
+      `SELECT event_time, user_host, argument
+       FROM mysql.general_log
+       WHERE command_type IN ('Connect', 'Quit')
+         ${cursorClause}
+       ORDER BY event_time ASC
+       LIMIT 500`,
+      cursorParams
+    );
+
+    let maxTime: bigint | undefined = params.lastAuditEventId ?? undefined;
+    for (const r of rows) {
+      const parsed = parseGeneralLogRow({
+        event_time: r.event_time as Date,
+        user_host: String(r.user_host ?? ""),
+        argument: String(r.argument ?? ""),
+      });
+      events.push(...parsed);
+
+      // Track max microsecond timestamp we've seen
+      const t = r.event_time instanceof Date ? r.event_time.getTime() : 0;
+      const us = BigInt(t) * BigInt(1000);
+      if (maxTime === undefined || us > maxTime) maxTime = us;
+    }
+
+    return {
+      ok: true,
+      events,
+      lastAuditEventId: maxTime,
+    };
+  } catch (err) {
+    const msg = (err as Error).message;
+    // Friendly hint if general_log isn't enabled (table doesn't exist
+    // or is empty due to log_output='FILE')
+    if (/doesn't exist|no such table/i.test(msg)) {
+      return {
+        ok: false,
+        events: [],
+        error:
+          "mysql.general_log table not available. Run: SET GLOBAL log_output='TABLE'; SET GLOBAL general_log='ON';",
+      };
+    }
+    return {
+      ok: false,
+      events: [],
+      error: `MySQL audit log poll failed: ${msg}`,
+    };
+  } finally {
+    if (conn) await conn.end().catch(() => {});
+  }
 }

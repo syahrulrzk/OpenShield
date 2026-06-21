@@ -34,3 +34,35 @@ process_watchlist:
 state_dir: /var/lib/openshield
 log_dir: /var/log/openshield
 log_file: /var/log/openshield/agent.log
+
+# ─── Log Watchers (file tailing) ────────────────────
+# Agent tails these files and emits events via the matching parser.
+# Path differs per distro:
+#   - Debian/Ubuntu: /var/log/syslog (rsyslog default)
+#   - RHEL/CentOS 7+: /var/log/messages (rsyslog default)
+#   - Alpine:        /var/log/messages
+# Edit the path if your distro uses a different location.
+log_watchers:
+  # SSH authentication (always required — feeds Server Auth page)
+  - path: /var/log/auth.log
+    parser: sshd
+  # On RHEL/CentOS the auth log is at /var/log/secure (uncomment if needed)
+  # - path: /var/log/secure
+  #   parser: sshd
+
+  # General system log (feeds Syslog page)
+  # Uses SyslogParser which filters noisy processes (kernel, cron, systemd)
+  # and infers severity from message keywords (error, fail, warn, panic, …).
+  - path: /var/log/syslog
+    parser: syslog
+  # RHEL/CentOS uses /var/log/messages instead — swap if deploying there
+  # - path: /var/log/messages
+  #   parser: syslog
+
+  # MySQL audit (optional — uncomment if you set log_output=FILE on target)
+  # - path: /var/log/mysql/mysql.log
+  #   parser: mysql_audit
+
+  # PostgreSQL audit (optional — uncomment if you enabled pgaudit)
+  # - path: /var/log/postgresql/postgresql-*-main.log
+  #   parser: pgaudit

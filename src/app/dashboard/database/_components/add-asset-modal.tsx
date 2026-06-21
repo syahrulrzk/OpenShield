@@ -53,6 +53,10 @@ export function AddAssetModal({
   // Opsi B: monitor all databases on this server
   // When true, dbName becomes a "bootstrap" DB for discovery (e.g. "postgres")
   const [monitorAllDatabases, setMonitorAllDatabases] = useState(false);
+  // MySQL connection audit log (mysql.general_log table mode).
+  // Only meaningful for dbType === MYSQL. For PG/MSSQL this flag is ignored
+  // and the UI hides it.
+  const [auditConnectionLog, setAuditConnectionLog] = useState(false);
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("");
   const [tags, setTags] = useState("");
@@ -94,6 +98,7 @@ export function AddAssetModal({
         password,
         testConnection,
         monitorAllDatabases,
+        auditConnectionLog: dbType === "MYSQL" ? auditConnectionLog : false,
         role: role.trim() || undefined,
         location: location.trim() || undefined,
         tags: tags
@@ -280,6 +285,58 @@ export function AddAssetModal({
                 </div>
               </label>
             </Field>
+            {/* Audit connection log (MySQL only — reads mysql.general_log table) */}
+            {dbType === "MYSQL" && (
+              <Field
+                label="Audit log"
+                hint={
+                  auditConnectionLog
+                    ? "Captures Connect / Quit / Access-denied events"
+                    : "Disabled"
+                }
+              >
+                <label
+                  className={`flex items-start gap-2 h-auto px-3 py-2 rounded-md border border-dashed cursor-pointer transition-colors ${
+                    auditConnectionLog
+                      ? "border-amber-500/50 bg-amber-500/10"
+                      : "border-[var(--border)] bg-[var(--surface-2)]"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={auditConnectionLog}
+                    onChange={(e) =>
+                      setAuditConnectionLog(e.target.checked)
+                    }
+                    disabled={busy}
+                    className="mt-1"
+                  />
+                  <div className="flex-1 leading-tight pt-0.5">
+                    <div className="text-[11px] font-medium text-zinc-200">
+                      Capture connect / disconnect events
+                    </div>
+                    <div className="text-[10px] text-zinc-500">
+                      Real-time auth events (success + failed) · skips query bodies
+                    </div>
+                    {auditConnectionLog && (
+                      <details className="mt-2 text-[10px] text-zinc-400">
+                        <summary className="cursor-pointer text-amber-300 hover:text-amber-200">
+                          One-time setup on target MySQL
+                        </summary>
+                        <pre className="mt-1.5 p-2 rounded bg-black/40 text-[10px] font-mono text-zinc-300 whitespace-pre overflow-x-auto">
+{`SET GLOBAL log_output = 'TABLE';
+SET GLOBAL general_log = 'ON';`}
+                        </pre>
+                        <div className="mt-1 text-[9px] text-zinc-500">
+                          Run once per MySQL server. Requires SUPER or
+                          SYSTEM_VARIABLES_ADMIN privilege.
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                </label>
+              </Field>
+            )}
           </div>
             <Field label="Username *" hint="Create with read-only grants">
               <input

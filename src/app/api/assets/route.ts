@@ -53,6 +53,10 @@ const createSchema = z
     // Multi-DB scan mode: poll ALL user databases on the server
     // When true, dbName is used as a "bootstrap" DB for discovery only
     monitorAllDatabases: z.boolean().optional().default(false),
+    // MySQL connection audit log (general_log table mode)
+    // When true, poller reads mysql.general_log for Connect/Quit events
+    // Requires manual SET GLOBAL general_log='ON' on target MySQL
+    auditConnectionLog: z.boolean().optional().default(false),
     // Required hostname (used for both SSH and DB; we generate dbName from displayName)
     hostname: z.string().trim().min(1).max(255).optional(),
     // Optional metadata
@@ -156,6 +160,7 @@ export async function POST(req: NextRequest) {
       password: data.password!,
       database: data.dbName!,
       monitorAllDatabases: data.monitorAllDatabases,
+      auditConnectionLog: data.auditConnectionLog,
     });
     if (!result.ok) {
       await audit({
@@ -224,6 +229,12 @@ export async function POST(req: NextRequest) {
         monitorAllDatabases: data.category === "DATABASE" && data.monitorAllDatabases
           ? true
           : false,
+        auditConnectionLog:
+          data.category === "DATABASE" &&
+          data.dbType === "MYSQL" &&
+          data.auditConnectionLog
+            ? true
+            : false,
         // Start as PENDING — poller will set ONLINE after first successful poll
         status: "PENDING",
         ...(dbEncData
@@ -328,6 +339,8 @@ export async function GET(req: NextRequest) {
       monitorAllDatabases: true,
       discoveredDatabases: true,
       lastDiscoveryAt: true,
+      auditConnectionLog: true,
+      lastAuditEventId: true,
       tags: true,
       description: true,
       createdAt: true,

@@ -33,6 +33,8 @@ type AssetInput = {
   tags: string[];
   monitorAllDatabases?: boolean;
   discoveredDatabases?: string[] | null;
+  auditConnectionLog?: boolean;
+  dbType?: string;
 };
 
 export function EditAssetModal({
@@ -57,6 +59,9 @@ export function EditAssetModal({
   const [monitorAllDatabases, setMonitorAllDatabases] = useState(
     asset.monitorAllDatabases ?? false
   );
+  const [auditConnectionLog, setAuditConnectionLog] = useState(
+    asset.auditConnectionLog ?? false
+  );
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -79,6 +84,9 @@ export function EditAssetModal({
         // when other fields are edited)
         ...(monitorAllDatabases !== (asset.monitorAllDatabases ?? false) && {
           monitorAllDatabases,
+        }),
+        ...(auditConnectionLog !== (asset.auditConnectionLog ?? false) && {
+          auditConnectionLog,
         }),
       };
       if (displayName.trim() && displayName.trim() !== asset.displayName) {
@@ -246,6 +254,55 @@ export function EditAssetModal({
               </div>
             </label>
           </Field>
+
+          {/* Audit connection log (MySQL only) */}
+          {asset.dbType === "MYSQL" && (
+            <Field
+              label="Audit log"
+              hint={
+                auditConnectionLog
+                  ? "Capturing connect/disconnect events"
+                  : "Disabled"
+              }
+            >
+              <label
+                className={`flex items-start gap-2 h-auto px-3 py-2 rounded-md border border-dashed cursor-pointer transition-colors ${
+                  auditConnectionLog
+                    ? "border-amber-500/50 bg-amber-500/10"
+                    : "border-[var(--border)] bg-[var(--surface-2)]"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={auditConnectionLog}
+                  onChange={(e) =>
+                    setAuditConnectionLog(e.target.checked)
+                  }
+                  disabled={busy}
+                  className="mt-1"
+                />
+                <div className="flex-1 leading-tight pt-0.5">
+                  <div className="text-[11px] font-medium text-zinc-200">
+                    Capture connect / disconnect events
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    Real-time auth events (success + failed) · skips query bodies
+                  </div>
+                  {auditConnectionLog && (
+                    <details className="mt-2 text-[10px] text-zinc-400">
+                      <summary className="cursor-pointer text-amber-300 hover:text-amber-200">
+                        Required on target MySQL
+                      </summary>
+                      <pre className="mt-1.5 p-2 rounded bg-black/40 text-[10px] font-mono text-zinc-300 whitespace-pre overflow-x-auto">
+{`SET GLOBAL log_output = 'TABLE';
+SET GLOBAL general_log = 'ON';`}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              </label>
+            </Field>
+          )}
 
           <Field label="Description" hint="optional, max 512 chars">
             <textarea

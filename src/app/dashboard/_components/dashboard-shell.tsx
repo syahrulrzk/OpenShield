@@ -89,8 +89,6 @@ const navGroups: NavGroup[] = [
             href: "/dashboard/events/syslog",
             label: "Syslog",
             icon: ScrollText,
-            locked: true,
-            badge: "Soon",
           },
           {
             href: "/dashboard/events/auditd",

@@ -136,6 +136,7 @@ export default async function DatabaseEventsPage({
           monitorAllDatabases: true,
           discoveredDatabases: true,
           lastDiscoveryAt: true,
+          auditConnectionLog: true,
           _count: { select: { dbEvents: true } },
         },
       }),

@@ -220,7 +220,13 @@ export async function POST(req: NextRequest) {
       // into one row, leaving rawData stale while message updates → confusing
       // "user: testuser, message: ...for gm" UI mismatch.
       const dedupUser = extractDedupKey(e.rawData, e.message);
-      const dedupSig = `${dedupUser}|${e.source}|${e.severity}`;
+      // Include rawData.event (e.g. "mysql.connect.success" vs "mysql.disconnect")
+      // so different action types from the same user/IP don't merge.
+      const eventKind =
+        e.rawData && typeof e.rawData === "object" && "event" in (e.rawData as Record<string, unknown>)
+          ? String((e.rawData as Record<string, unknown>).event ?? "")
+          : "";
+      const dedupSig = `${dedupUser}|${e.source}|${e.severity}|${eventKind}`;
       try {
         const existing = await prisma.agentEvent.findFirst({
           where: {

@@ -18,6 +18,7 @@ import { decrypt } from "@/lib/security/crypto";
 import { pollSshAsset, decryptSshCredential, type SshPollResult } from "./ssh";
 import {
   pollDatabase,
+  pollMysqlAuditLog,
   decryptDbCredential,
   type DbPollResult,
 } from "./db";
@@ -48,6 +49,8 @@ type AssetRow = {
   dbName: string | null;
   dbUser: string | null;
   monitorAllDatabases: boolean;
+  auditConnectionLog: boolean;
+  lastAuditEventId: bigint | null;
   pollerCursor: string | null;
   sshCredentials: { sshEncData: string | null } | null;
   dbCredentials: { dbEncData: string | null } | null;
@@ -101,6 +104,8 @@ export async function runPollerCycle(opts: {
       dbName: true,
       dbUser: true,
       monitorAllDatabases: true,
+      auditConnectionLog: true,
+      lastAuditEventId: true,
       pollerCursor: true,
       sshCredentials: { select: { sshEncData: true } },
       dbCredentials: { select: { dbEncData: true } },
@@ -331,6 +336,7 @@ async function pollSingle(asset: any): Promise<{
   sshResult?: SshPollResult;
   dbResult?: DbPollResult;
   error?: string;
+  auditError?: string;
 }> {
   const typed = asset as AssetRow;
   try {
@@ -381,6 +387,53 @@ async function pollSingle(asset: any): Promise<{
         database,
         monitorAllDatabases: typed.monitorAllDatabases ?? false,
       });
+
+      // MySQL connection audit log: separate poll that reads
+      // mysql.general_log TABLE (no query bodies, just Connect/Quit).
+      // Only MySQL — PG/MSSQL would need different audit mechanism.
+      let auditResult: DbPollResult | null = null;
+      if (
+        typed.auditConnectionLog &&
+        dbType === "MYSQL" &&
+        result.ok
+      ) {
+        auditResult = await pollMysqlAuditLog({
+          host,
+          port,
+          user: typed.dbUser ?? cred.user,
+          password: cred.password,
+          database,
+          lastAuditEventId: typed.lastAuditEventId ?? null,
+        });
+      }
+
+      // Persist lastAuditEventId cursor (advance only when poll OK)
+      if (auditResult?.ok && auditResult.lastAuditEventId != null) {
+        await prisma.asset.update({
+          where: { id: typed.id },
+          data: { lastAuditEventId: auditResult.lastAuditEventId },
+        });
+      }
+
+      // Merge audit events into the main result
+      if (auditResult && auditResult.ok && auditResult.events.length > 0) {
+        return {
+          asset: typed,
+          dbResult: {
+            ok: true,
+            events: [...result.events, ...auditResult.events],
+          },
+        };
+      }
+      if (auditResult && !auditResult.ok) {
+        // Don't fail the whole cycle — surface audit error separately
+        // so /api/poller/run can still mark asset OK (or note audit err).
+        return {
+          asset: typed,
+          dbResult: result,
+          auditError: auditResult.error,
+        };
+      }
       return { asset: typed, dbResult: result };
     }
     return { asset: typed, error: `Unsupported category: ${typed.category}` };

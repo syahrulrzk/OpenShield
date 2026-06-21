@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -738,6 +738,274 @@ class SshdParser:
         return None
 
 
+class MysqlAuditParser:
+    """
+    Parse MySQL audit log lines (general_log in FILE mode).
+
+    Output file format depends on `log_output` setting:
+      - FILE mode: `/var/log/mysql/<hostname>.log` — syslog-style plain text
+      - TABLE mode: `mysql.general_log` — queryable but agent doesn't read it
+        (server-side poller does that for assets with auditConnectionLog=true).
+
+    For FILE mode, each line looks like:
+      /usr/sbin/mysqld, Version: 8.0.46 (MySQL Community Server - GPL). started with:
+      Tcp port: 3306  Unix socket: /var/run/mysqld/mysqld.sock
+      Time                 Id Command    Argument
+      2026-06-21T07:03:34.896750Z   188 Connect   Access denied for user 'openshield'@'172.16.19.235' (using password: YES)
+      2026-06-21T07:03:35.123456Z   189 Connect   openshield@172.16.19.235 on app_prod using TCP/IP
+      2026-06-21T07:04:00.000000Z   190 Quit
+
+    We ONLY capture: Connect (success + Access denied), Quit.
+    Query / Init / Statistics / etc. are skipped — privacy + perf.
+
+    Emits 'log.line' events with severity:
+      - ERROR: Access denied (failed login)
+      - INFO:  successful connect, disconnect
+
+    Setup on target MySQL server:
+      SET GLOBAL log_output = 'FILE';   -- or 'TABLE' for server-side polling
+      SET GLOBAL general_log  = 'ON';
+      -- Rotate via logrotate or systemd timer; agent tails actively.
+    """
+
+    # 2026-06-21T07:03:35.123456Z   188 Connect   <argument...>
+    RE_CONNECT_DENIED = re.compile(
+        r"^(\S+)\s+\d+\s+Connect\s+Access denied for user '([^']+)'@'([^']+)'"
+        r"(?:\s+\(using password: (YES|NO)\))?"
+    )
+    # 2026-06-21T07:03:35.123456Z   188 Connect   <user>@<host> on <db> using <protocol>
+    RE_CONNECT_OK = re.compile(
+        # Connect lines come in 3 flavors:
+        #   1. <user>@<host> on <db> using <proto>      (local conn, picked a DB)
+        #   2. <user>@<host> on  using <proto>          (local conn, no DB picked — `on ` followed by space)
+        #   3. <user>@<host> using <proto>              (auth-only path)
+        # The DB group is optional and may be empty.
+        r"^(\S+)\s+\d+\s+Connect\s+([^\s@]+)@([^\s]+?)(?:\s+on(?:\s+(\S*))?)?(?:\s+using\s+\S+)?\s*$"
+    )
+    # 2026-06-21T07:04:00.000000Z   190 Quit
+    RE_QUIT = re.compile(
+        r"^(\S+)\s+\d+\s+Quit\s*$"
+    )
+
+    def __init__(self):
+        pass
+
+    # MySQL general_log lines look like:
+    #   <timestamp>\t<id> <command>\t<argument>
+    # Commands of interest: Connect, Quit. Others (Query, Init, Statistics, ...)
+    # are skipped per Bos (privacy + performance).
+    RE_COMMAND = re.compile(r"\s(Connect|Quit)\s")
+
+    def parse(self, line: str) -> Optional[Dict[str, Any]]:
+        line = line.rstrip("\n")
+        if not line:
+            return None
+
+        # Skip Query / Init / Statistics etc. explicitly (privacy + perf per Bos)
+        if " Query\t" in line or " Init\t" in line or " Statistics\t" in line:
+            return None
+        # Skip the banner / header lines (start with "/" or "Time")
+        if line.startswith("/") or line.startswith("Time ") or line.startswith("Tcp port"):
+            return None
+
+        # Only process lines that are Connect or Quit events
+        if not self.RE_COMMAND.search(line):
+            return None
+
+        m = self.RE_CONNECT_DENIED.match(line)
+        if m:
+            ts, username, source_ip, pwd_used = m.groups()
+            return self._event(
+                ts=ts,
+                severity="ERROR",
+                event_type="mysql.connect.failed",
+                username=username,
+                source_ip=source_ip,
+                database=None,
+                extra={
+                    "passwordUsed": pwd_used == "YES",
+                    "service": "MYSQL",
+                    "parser": "mysql_audit",
+                    "source": "/var/lib/mysql/reborn.log",
+                },
+                raw_excerpt=f"Access denied for '{username}'@'{source_ip}'",
+            )
+
+        m = self.RE_CONNECT_OK.match(line)
+        if m:
+            ts, username, source_ip, database = m.groups()
+            return self._event(
+                ts=ts,
+                severity="INFO",
+                event_type="mysql.connect.success",
+                username=username,
+                source_ip=source_ip,
+                database=database,
+                extra={
+                    "service": "MYSQL",
+                    "parser": "mysql_audit",
+                    "source": "/var/lib/mysql/reborn.log",
+                },
+                raw_excerpt=f"connect {username}@{source_ip} on {database or '-'}",
+            )
+
+        m = self.RE_QUIT.match(line)
+        if m:
+            ts = m.group(1)
+            # Quit events don't carry user@host in general_log — emit minimal event
+            return self._event(
+                ts=ts,
+                severity="INFO",
+                event_type="mysql.disconnect",
+                username=None,
+                source_ip=None,
+                database=None,
+                extra={
+                    "service": "MYSQL",
+                    "parser": "mysql_audit",
+                    "source": "/var/lib/mysql/reborn.log",
+                },
+                raw_excerpt="connection closed",
+            )
+
+        return None
+
+    @staticmethod
+    def _event(ts, severity, event_type, username, source_ip, database, extra, raw_excerpt):
+        # Returns dict matching buffer_event() keyword signature:
+        #   (event_type, severity, source, message, raw_data)
+        # buffer_event adds eventTime = now() automatically.
+        # The original log timestamp `ts` is preserved in raw_data for the server.
+        return {
+            "event_type": "log.line",
+            "severity": severity,
+            "source": extra.get("source", "/var/log/mysql/mysql-audit.log"),
+            "message": raw_excerpt,
+            "raw_data": {
+                "event": event_type,
+                "username": username,
+                "ip": source_ip,
+                "database": database,
+                "message": raw_excerpt,
+                "eventTime": ts,
+                **extra,
+            },
+        }
+
+
+class PgAuditParser:
+    """
+    Parse PostgreSQL pgaudit log lines.
+
+    pgaudit emits structured log entries when configured. Format (CSV-ish):
+      2026-06-21 14:03:00 UTC [unknown] postgres [unknown] db_prod [unknown] LOG:
+        AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.users,"SELECT * FROM users WHERE id=1"
+      2026-06-21 14:04:00 UTC [unknown] postgres [unknown] db_prod [unknown] LOG:
+        AUDIT: SESSION,2,1,WRITE,INSERT,TABLE,public.users,...
+
+    For connection events, pgaudit with `pgaudit.log='connection'` emits:
+      2026-06-21 14:05:00 UTC [unknown] dbuser [unknown] db_prod [192.168.1.5] LOG:
+        AUDIT: SESSION,3,1,CONNECT,,,,"user=dbuser,db=db_prod,client=192.168.1.5"
+      2026-06-21 14:06:00 UTC [unknown] dbuser [unknown] db_prod [192.168.1.5] LOG:
+        AUDIT: SESSION,4,1,DISCONNECT,,,,
+
+    We capture CONNECT + DISCONNECT + failed authentication only.
+    Skipping SESSION/READ/WRITE/SELECT/INSERT/UPDATE/DELETE per Bos (slow query noise).
+
+    Setup on target PostgreSQL server:
+      shared_preload_libraries = 'pgaudit'         -- postgresql.conf
+      pgaudit.log = 'connection'                   -- log only connect/disconnect
+      -- Or for full: pgaudit.log = 'ddl, role, write, read'
+      CREATE EXTENSION IF NOT EXISTS pgaudit;      -- per-database
+
+    Emits 'log.line' events with severity:
+      - ERROR: failed authentication (parse hint: user@ip in denial line)
+      - INFO:  successful connect, disconnect
+    """
+
+    # 2026-06-21 14:05:00 UTC [unknown] dbuser [unknown] db_prod [192.168.1.5] LOG: AUDIT: SESSION,3,1,CONNECT,,,,"user=dbuser,db=db_prod"
+    RE_PGAUDIT_EVENT = re.compile(
+        r"^(\S+)\s+\S+\s+\[unknown\]\s+(\S+)\s+\[unknown\]\s+(\S+)"
+        r"\s+\[([^\]]+)\]\s+LOG:\s+AUDIT:\s+SESSION,\d+,\d+,(\w+),"
+    )
+
+    def __init__(self):
+        pass
+
+    def parse(self, line: str) -> Optional[Dict[str, Any]]:
+        line = line.rstrip("\n")
+        if "AUDIT:" not in line:
+            return None
+        # Skip SESSION with non-connect actions (READ/WRITE/DDL/ROLE/etc.)
+        # per Bos (slow query noise)
+        if any(action in line for action in ("READ,", "WRITE,", "DDL,", "ROLE,", "MISC,")):
+            return None
+
+        m = self.RE_PGAUDIT_EVENT.search(line)
+        if not m:
+            return None
+
+        ts, username, database, source_ip, action = m.groups()
+
+        if action == "CONNECT":
+            return self._event(
+                ts=ts,
+                severity="INFO",
+                event_type="pg.connect.success",
+                username=username,
+                source_ip=source_ip,
+                database=database,
+                extra={"service": "POSTGRES", "parser": "pgaudit", "source": "/var/log/postgresql/pgaudit.log"},
+                raw_excerpt=f"connect {username}@{source_ip} db={database}",
+            )
+        elif action == "DISCONNECT":
+            return self._event(
+                ts=ts,
+                severity="INFO",
+                event_type="pg.disconnect",
+                username=username,
+                source_ip=source_ip,
+                database=database,
+                extra={"service": "POSTGRES", "parser": "pgaudit", "source": "/var/log/postgresql/pgaudit.log"},
+                raw_excerpt=f"disconnect {username}@{source_ip}",
+            )
+        elif action == "FAILED_AUTH" or action == "AUTH_FAILED":
+            return self._event(
+                ts=ts,
+                severity="ERROR",
+                event_type="pg.connect.failed",
+                username=username,
+                source_ip=source_ip,
+                database=database,
+                extra={"service": "POSTGRES", "parser": "pgaudit", "source": "/var/log/postgresql/pgaudit.log"},
+                raw_excerpt=f"auth failed {username}@{source_ip}",
+            )
+        # Other actions (READ, WRITE, DDL, ROLE, etc.) — skipped per Bos
+        return None
+
+    @staticmethod
+    def _event(ts, severity, event_type, username, source_ip, database, extra, raw_excerpt):
+        # Returns dict matching buffer_event() keyword signature:
+        #   (event_type, severity, source, message, raw_data)
+        # buffer_event adds eventTime = now() automatically.
+        # The original log timestamp `ts` is preserved in raw_data for the server.
+        return {
+            "event_type": "log.line",
+            "severity": severity,
+            "source": extra.get("source", "/var/log/mysql/mysql-audit.log"),
+            "message": raw_excerpt,
+            "raw_data": {
+                "event": event_type,
+                "username": username,
+                "ip": source_ip,
+                "database": database,
+                "message": raw_excerpt,
+                "eventTime": ts,
+                **extra,
+            },
+        }
+
+
 class SyslogParser:
     """
     Stub parser for syslog — emits all lines as INFO by default.
@@ -752,6 +1020,8 @@ class SyslogParser:
 PARSERS: Dict[str, Any] = {
     "sshd": SshdParser,
     "syslog": SyslogParser,
+    "mysql_audit": MysqlAuditParser,
+    "pgaudit": PgAuditParser,
 }
 
 
@@ -861,12 +1131,12 @@ class LogTailer:
         for path, parser in self.targets:
             if not os.path.exists(path):
                 # File doesn't exist (e.g., /var/log/secure on Ubuntu) — silently skip
-                self.log.debug(f"Skip {path} (does not exist)")
+                self.log.info(f"Skip {path} (does not exist)")
                 continue
             try:
                 st = os.stat(path)
             except OSError as e:
-                self.log.debug(f"Skip {path} (stat failed: {e})")
+                self.log.warning(f"Skip {path} (stat failed: {e})")
                 continue
             inode = st.st_ino
             size = st.st_size

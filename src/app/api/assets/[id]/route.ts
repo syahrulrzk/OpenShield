@@ -35,6 +35,10 @@ const patchSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(),
   // Opsi B: toggle multi-DB scan mode
   monitorAllDatabases: z.boolean().optional(),
+  // MySQL connection audit log (general_log table mode)
+  // Poller will pick up change on next cycle. No state reset needed —
+  // lastAuditEventId cursor stays valid (we read NEWER events only).
+  auditConnectionLog: z.boolean().optional(),
 });
 
 const deleteSchema = z.object({
@@ -79,6 +83,8 @@ export async function PATCH(
       description: true,
       tags: true,
       monitorAllDatabases: true,
+      auditConnectionLog: true,
+      dbType: true,
     },
   });
   if (!existing) {
@@ -109,6 +115,7 @@ export async function PATCH(
     "description",
     "tags",
     "monitorAllDatabases",
+    "auditConnectionLog",
   ] as const) {
     if (k in data) {
       const oldV = (existing as Record<string, unknown>)[k];
@@ -141,6 +148,7 @@ export async function PATCH(
       status: true,
       monitorAllDatabases: true,
       discoveredDatabases: true,
+      auditConnectionLog: true,
     },
   });
 

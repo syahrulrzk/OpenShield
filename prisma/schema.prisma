@@ -117,6 +117,17 @@ model Asset {
   discoveredDatabases Json?     @map("discovered_databases")
   lastDiscoveryAt     DateTime? @map("last_discovery_at")
 
+  // ===== MYSQL CONNECTION AUDIT (general_log) =====
+  // When TRUE: poller reads mysql.general_log TABLE for Connect/Quit events.
+  // Requires manual SQL on target MySQL:
+  //   SET GLOBAL log_output='TABLE';
+  //   SET GLOBAL general_log='ON';
+  // Privacy: only Connect/Quit + Access-denied rows are parsed; query bodies
+  // are NEVER persisted to OpenShield.
+  // MySQL only — PG/MSSQL ignore this flag.
+  auditConnectionLog  Boolean   @default(false) @map("audit_connection_log")
+  lastAuditEventId    BigInt?   @map("last_audit_event_id") // mysql.general_log.event_time microsecond cursor
+
   status     AssetStatus @default(PENDING)
   lastSeenAt DateTime?   @map("last_seen_at")
   createdAt  DateTime    @default(now()) @map("created_at")

@@ -34,6 +34,20 @@ const SERVER_SOURCES = [
   "/var/log/apache2/error.log",
 ] as const;
 
+// Subsets used by sub-pages under /dashboard/events/* so each page can
+// scope its queries without rebuilding the route from scratch.
+const SYSLOG_SOURCES = [
+  "/var/log/syslog",
+  "/var/log/messages",
+  "/var/log/syslog.1",
+  "/var/log/messages.1",
+] as const;
+
+const SOURCE_TYPE_MAP: Record<string, readonly string[]> = {
+  syslog: SYSLOG_SOURCES,
+  // future: apps, auditd, fim — each gets its own subset
+};
+
 function isServerEvent(source: string): boolean {
   return SERVER_SOURCES.some((s) => source === s || source.endsWith(s));
 }
@@ -87,6 +101,11 @@ export async function GET(req: NextRequest) {
   // themselves remain in the DB for forensic/audit purposes — we just don't
   // show them in the live operational view. Admins can opt-in via ?hideRevoked=0.
   const hideRevoked = sp.get("hideRevoked") !== "0";
+  // Sub-page source scoping: e.g. /dashboard/events/syslog sets ?sourceType=syslog
+  // so the API filters to only syslog sources. Unknown values fall through to
+  // the full SERVER_SOURCES list (current behaviour).
+  const sourceType = sp.get("sourceType") || "";
+  const scopedSources = SOURCE_TYPE_MAP[sourceType];
 
   // Time window — but if the user searches by date (in `q`), use a generous
   // window instead of the user-selected `range`. Otherwise the 24h range
@@ -103,9 +122,11 @@ export async function GET(req: NextRequest) {
 
   // Base WHERE — audit trail: by default exclude events from revoked agents.
   // Admins can opt-in to seeing them via ?hideRevoked=0 (rare, for forensics).
+  // If sourceType is set (e.g. "syslog"), restrict source to the subset.
   const baseWhere: Prisma.AgentEventWhereInput = {
     eventType: "log.line",
     eventTime: { gte: since },
+    ...(scopedSources ? { source: { in: [...scopedSources] } } : {}),
     ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
   };
 

@@ -217,8 +217,12 @@ const RANGE_OPTIONS: DropdownOption[] = [
 
 export function ServerEventsContent({
   initialData,
+  sourceType,
 }: {
   initialData: ServerEventsData;
+  /** Optional sub-page source scoping (e.g. "syslog"). Forwarded to
+   *  /api/events/server?sourceType=… so the API filters to a subset. */
+  sourceType?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -270,7 +274,12 @@ export function ServerEventsContent({
       setIsFetching(true);
       setError(null);
       try {
-        const res = await fetch(`/api/events/server?${sp.toString()}`, {
+        // Inject sourceType (if provided by parent sub-page) into API URL.
+        // We build a fresh URLSearchParams so the sourceType param is always
+        // present even if URL navigation strips it.
+        const apiParams = new URLSearchParams(sp.toString());
+        if (sourceType) apiParams.set("sourceType", sourceType);
+        const res = await fetch(`/api/events/server?${apiParams.toString()}`, {
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
