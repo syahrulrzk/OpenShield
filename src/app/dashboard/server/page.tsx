@@ -23,7 +23,7 @@ import { parseDateFromQuery, parseIpFromQuery } from "@/lib/search/query-parsers
 import { ServerEventsContent, type ServerEventsData } from "./_components/server-events-content";
 import { DeleteEventsButton } from "./_components/delete-events-button";
 
-type Search = { range?: string; status?: string; q?: string; hideRevoked?: string };
+type Search = { range?: string; status?: string; q?: string; hideRevoked?: string; showConnection?: string };
 
 // Server-side log paths
 const SERVER_SOURCES = [
@@ -273,12 +273,20 @@ export default async function ServerEventsPage({
   // themselves remain in the DB for forensic/audit purposes — we just don't
   // show them in the live operational view. Admins can opt-in via ?hideRevoked=0.
   const hideRevoked = sp.hideRevoked !== "0";
+  // 2026-06-21: hide low-signal `sshd.connection` events by default. They're
+  // pure connection metadata (IP:PORT handshake) with no user/result — the
+  // higher-signal `sshd.accepted` / `sshd.failed` event from the same
+  // session carries the actual auth result. Opt-in via ?showConnection=1.
+  const showConnection = sp.showConnection === "1";
 
   // 2026-06-21 refactor: server auth events now live in tEventLogServerAuth
   // (unified table for agent-side sshd + poller-side auth). Direct query.
   const baseWhere: Prisma.TEventLogServerAuthWhereInput = {
     eventTime: { gte: since },
     ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
+    ...(showConnection ? {} : {
+      NOT: { raw: { contains: "|sshd.connection" } },
+    }),
   };
 
   // Build search filters — same logic as /api/events/server so SSR matches
@@ -369,7 +377,9 @@ export default async function ServerEventsPage({
         ip: e.sourceIp,
         status: e.status,
         method: e.method,
-        service: e.service,
+        service: typeof e.service === "string" && e.service.length > 0
+          ? e.service.toUpperCase()
+          : null,
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
       },
@@ -411,6 +421,7 @@ export default async function ServerEventsPage({
     range,
     q,
     hideRevoked,
+    showConnection,
   };
 
   return (

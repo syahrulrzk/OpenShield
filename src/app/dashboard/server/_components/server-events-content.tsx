@@ -111,6 +111,11 @@ function getEventUser(rawData: unknown, message: string): string | null {
 
 const SERVICE_META: Record<string, { label: string; color: string; icon: any }> = {
   SSH: { label: "SSH", color: "#06b6d4", icon: Terminal },
+  // Aliases — older parsers wrote lowercase "sshd" / "openssh" / "opensshd".
+  // API normalises to UPPERCASE; aliases here map SSHD/OPENSSH variants back
+  // to a single "SSH" label so users see consistent service names.
+  SSHD: { label: "SSH", color: "#06b6d4", icon: Terminal },
+  OPENSSH: { label: "SSH", color: "#06b6d4", icon: Terminal },
   SFTP: { label: "SFTP", color: "#3b82f6", icon: FolderOpen },
   SCP: { label: "SCP", color: "#a855f7", icon: Copy },
   SUDO: { label: "sudo", color: "#a855f7", icon: Shield },
@@ -203,6 +208,13 @@ export type ServerEventsData = {
   range: string;
   q: string;
   hideRevoked: boolean;
+  /**
+   * Whether low-signal `sshd.connection` events are shown in the UI.
+   * Default false (hidden) — they only carry connection metadata, no auth
+   * result, and the higher-signal `sshd.accepted` event from the same
+   * session carries the actual data. Toggle in the toolbar to opt-in.
+   */
+  showConnection?: boolean;
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -456,6 +468,44 @@ export function ServerEventsContent({
             <>
               <Shield className="h-3.5 w-3.5" />
               Revoked shown
+            </>
+          )}
+        </button>
+        {/* ── Show connection toggle (hide low-signal sshd.connection) ─ */}
+        <button
+          type="button"
+          onClick={() => {
+            const params = new URLSearchParams(sp.toString());
+            if (!data.showConnection) {
+              params.set("showConnection", "1");
+            } else {
+              params.delete("showConnection");
+            }
+            const qs = params.toString();
+            startTransition(() => {
+              router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+            });
+          }}
+          className={`h-9 px-2.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition-colors ${
+            data.showConnection
+              ? "bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/15"
+              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/15"
+          }`}
+          title={
+            data.showConnection
+              ? "Showing low-signal sshd.connection events. Click to hide (default)."
+              : "Hiding low-signal sshd.connection events (no auth result, only IP:PORT). Click to show for forensic."
+          }
+        >
+          {data.showConnection ? (
+            <>
+              <Activity className="h-3.5 w-3.5" />
+              Connection shown
+            </>
+          ) : (
+            <>
+              <Activity className="h-3.5 w-3.5 opacity-50" />
+              Connection hidden
             </>
           )}
         </button>

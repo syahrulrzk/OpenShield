@@ -106,6 +106,12 @@ export async function GET(req: NextRequest) {
   // themselves remain in the DB for forensic/audit purposes — we just don't
   // show them in the live operational view. Admins can opt-in via ?hideRevoked=0.
   const hideRevoked = sp.get("hideRevoked") !== "0";
+  // 2026-06-21: hide low-signal `sshd.connection` events by default — they're
+  // pure connection metadata (IP:PORT handshake, no auth result) and get
+  // immediately followed by the higher-signal `sshd.accepted` / `sshd.failed`
+  // event from the same session. Hiding them by default cuts noise ~3×.
+  // Opt-in via ?showConnection=1 to see all connection metadata.
+  const showConnection = sp.get("showConnection") === "1";
   // Sub-page source scoping: e.g. /dashboard/events/syslog sets ?sourceType=syslog
   // so the API filters to only syslog sources. Unknown values fall through to
   // the full SERVER_SOURCES list (current behaviour).
@@ -137,6 +143,12 @@ export async function GET(req: NextRequest) {
   const baseWhere: Prisma.TEventLogServerAuthWhereInput = {
     eventTime: { gte: since },
     ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
+    // Hide low-signal sshd.connection events. They have no user/result, only
+    // connection metadata. The corresponding sshd.accepted/sshd.failed row
+    // from the same session carries the actual auth result.
+    ...(showConnection ? {} : {
+      NOT: { raw: { contains: "|sshd.connection" } },
+    }),
   };
 
   // Build search filters (date / IP / text → user/ip/message/source)
@@ -290,7 +302,15 @@ export async function GET(req: NextRequest) {
         ip: e.sourceIp,
         status: e.status,
         method: e.method,
-        service: e.service,
+        // Normalize service to UPPERCASE (SSH/SUDO/NGINX). The DB column
+        // sometimes contains lowercase variants from older parsers
+        // (e.g. "sshd" → "SSHD"). The UI SERVICE_META has aliases for
+        // common variants (SSHD/OPENSSH → "SSH") so the user always sees
+        // a consistent label. SERVICE_META lookup is case-sensitive so
+        // we keep the canonical UPPERCASE form here.
+        service: typeof e.service === "string" && e.service.length > 0
+          ? e.service.toUpperCase()
+          : null,
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
       },
@@ -325,5 +345,6 @@ export async function GET(req: NextRequest) {
     range,
     q,
     hideRevoked,
+    showConnection,
   });
 }
