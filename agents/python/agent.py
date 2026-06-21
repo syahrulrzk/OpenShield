@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -424,7 +424,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "ERROR",
                 "source": "/var/log/auth.log",
-                "message": f"SSH login failed: user={user}, ip={ip}, port={port}",
+                "message": f"SSH login failed: user={user}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.failed_password",
                     "user": user,
@@ -456,7 +456,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SSH login success: user={user}, ip={ip}, port={port}",
+                "message": f"SSH login success: user={user}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.accepted",
                     "user": user,
@@ -502,7 +502,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SSH connection closed: user={user or '?'}, ip={ip or '?'}, port={port}",
+                "message": f"SSH connection closed: user={user or '?'}, ip={ip or '?'}",
                 "raw_data": {
                     "event": "sshd.conn_closed",
                     "user": user,
@@ -519,7 +519,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SFTP session opened: user={user}, ip={ip}, port={port}",
+                "message": f"SFTP session opened: user={user}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.sftp_session",
                     "user": user,
@@ -537,7 +537,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SFTP session opened (internal-sftp): user={user}, ip={ip}, port={port}",
+                "message": f"SFTP session opened (internal-sftp): user={user}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.sftp_session",
                     "user": user,
@@ -555,7 +555,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SCP session opened: user={user}, ip={ip}, port={port}",
+                "message": f"SCP session opened: user={user}, ip={ip}",
                 "raw_data": {
                     "event": "sshd.scp_session",
                     "user": user,
@@ -573,7 +573,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SSH shell session opened: user={user}, ip={ip}, port={port}, tty={tty or 'console'}",
+                "message": f"SSH shell session opened: user={user}, ip={ip}, tty={tty or 'console'}",
                 "raw_data": {
                     "event": "sshd.shell_session",
                     "user": user,
@@ -597,7 +597,7 @@ class SshdParser:
                 "event_type": "log.line",
                 "severity": "INFO",
                 "source": "/var/log/auth.log",
-                "message": f"SSH command exec: user={user}, ip={ip}, port={port}, cmd={cmd_short}",
+                "message": f"SSH command exec: user={user}, ip={ip}, cmd={cmd_short}",
                 "raw_data": {
                     "event": "sshd.command_session",
                     "user": user,
