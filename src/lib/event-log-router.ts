@@ -144,6 +144,17 @@ function extractDedupKey(
       user = `${proc}|${msgFp}`;
     }
   }
+  // Auditd: use (comm + unit + res + auditd_type) as identity so
+  // multiple SERVICE_START events for different units within the
+  // dedup window don't merge into a single row.
+  if (rawData && typeof rawData === "object" && rawData.parser === "auditd") {
+    const comm = typeof rawData.comm === "string" ? rawData.comm : "?";
+    const unitMatch = message.match(/^\w+:\s+(\S+)\s+\(/);
+    const unit = unitMatch ? unitMatch[1] : "?";
+    const res = typeof rawData.res === "string" ? rawData.res : "?";
+    const auditdType = typeof rawData.auditd_type === "string" ? rawData.auditd_type : "?";
+    user = `auditd|${auditdType}|${comm}|${unit}|${res}`;
+  }
   // For connection-class events (sshd.connection), include client source
   // port in the dedup sig — same IP can open many parallel SSH sessions
   // each with their own ephemeral port. Without port, two unrelated

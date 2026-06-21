@@ -127,6 +127,45 @@ READ / WRITE / DDL / ROLE events are silently skipped (privacy + perf).
 
 ---
 
+## Auditd (Linux Kernel Audit)
+
+Added in **v1.5.0**. Tails `/var/log/audit/audit.log` for high-signal events:
+
+- `USER_LOGIN`, `USER_LOGOUT`, `USER_START`, `USER_END`
+- `USER_AUTH`, `USER_ACCT`
+- `LOGIN`, `LOGOUT` (tty sessions)
+- `SERVICE_START`, `SERVICE_STOP` (systemd units)
+- `CONFIG_CHANGE` (audit rule changes)
+- `SYSCALL` — filtered to keys: `sudo_use`, `su_use`, `passwd_changes`,
+  `shadow_changes`, `sudoers_changes`, `sshd_config_changes`, `time_change`
+
+Setup on target host:
+
+```bash
+apt install auditd
+systemctl enable --now auditd
+
+# Recommended rules (append to /etc/audit/rules.d/openshield.rules)
+cat > /etc/audit/rules.d/openshield.rules << 'EOF'
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/shadow -p wa -k shadow_changes
+-w /etc/sudoers -p wa -k sudoers_changes
+-w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+-a always,exit -F path=/usr/bin/sudo -F perm=x -k sudo_use
+-a always,exit -F path=/usr/bin/su -F perm=x -k su_use
+EOF
+
+auditctl -R /etc/audit/rules.d/openshield.rules
+# Or: systemctl restart auditd  (reads rules.d/*.rules)
+```
+
+The agent needs `SupplementaryGroups=adm` in systemd unit (already set)
+to read `/var/log/audit/audit.log` (mode 0640 root:adm).
+
+Dashboard: `/dashboard/events/auditd` — filterable by auditd type, severity, range.
+
+---
+
 ## Adding a new parser
 
 1. Implement a class with `parse(self, line: str) -> Optional[Dict[str, Any]]`

@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -882,7 +882,7 @@ class MysqlAuditParser:
             "source": extra.get("source", "/var/log/mysql/mysql-audit.log"),
             "message": raw_excerpt,
             "raw_data": {
-                "event": event_type,
+                "event": canonical_event,
                 "username": username,
                 "ip": source_ip,
                 "database": database,
@@ -995,7 +995,7 @@ class PgAuditParser:
             "source": extra.get("source", "/var/log/mysql/mysql-audit.log"),
             "message": raw_excerpt,
             "raw_data": {
-                "event": event_type,
+                "event": canonical_event,
                 "username": username,
                 "ip": source_ip,
                 "database": database,
@@ -1017,11 +1017,211 @@ class SyslogParser:
         return None  # disabled by default; see audit notes
 
 
+class AuditdParser:
+    """
+    Parse Linux auditd (audit.log) lines.
+
+    Format (one line per event, space-separated key=value pairs):
+        type=USER_LOGIN msg=audit(1700000000.123:456): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='op=login id=4294967295 exe="/usr/sbin/sshd" hostname=? addr=1.2.3.4 terminal=pts/0 res=failed' UID="root" AUID="unset"
+        type=SYSCALL msg=audit(1700000000.124:457): arch=c000003e syscall=59 success=yes exit=0 a0=... a1=... ppid=1 pid=12345 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sudo" exe="/usr/bin/sudo" subj=unconfined key="sudo_use" ARCH=x86_64 SYSCALL=execve AUID="root" UID="root" GID="root" EUID="root" SUID="root" FSUID="root" EGID="root" SGID="root" FSGID="root"
+        type=USER_START msg=audit(1700000000.125:458): pid=12345 uid=0 auid=4294967295 ses=4294967295 msg='op=login id=0 exe="/usr/sbin/sshd" hostname=? addr=1.2.3.4 terminal=pts/0 res=success' UID="root" AUID="unset"
+
+    Captures high-signal event types (others skipped to avoid BPF/CRED noise):
+      - USER_LOGIN / USER_LOGOUT - user session lifecycle
+      - USER_START / USER_END - user process context (su, sudo, ssh)
+      - LOGIN / LOGOUT - tty logins (rare on Ubuntu)
+      - SYSCALL - filtered to known interesting keys (sudo_use, sshd_config_changes, etc.)
+      - CONFIG_CHANGE - audit rules changed
+      - SERVICE_START / SERVICE_STOP - systemd unit changes
+
+    Setup on target Linux host:
+      apt install auditd                          # Debian/Ubuntu
+      systemctl enable --now auditd
+      cat >> /etc/audit/rules.d/openshield.rules << 'EOF'
+      -w /etc/passwd -p wa -k passwd_changes
+      -w /etc/shadow -p wa -k shadow_changes
+      -w /etc/sudoers -p wa -k sudoers_changes
+      -w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+      -a always,exit -F path=/usr/bin/sudo -F perm=x -k sudo_use
+      -a always,exit -F path=/usr/bin/su -F perm=x -k su_use
+      EOF
+      auditctl -R /etc/audit/rules.d/openshield.rules
+
+    Emits 'log.line' events with severity:
+      - ERROR: failed USER_LOGIN / USER_AUTH
+      - WARN:  CONFIG_CHANGE, failed SERVICE_*, failed syscall
+      - INFO:  everything else
+    """
+
+    # High-signal event types we always capture
+    INTERESTING_TYPES = {
+        "USER_LOGIN", "USER_LOGOUT",
+        "USER_START", "USER_END",
+        "USER_AUTH", "USER_ACCT",
+        "LOGIN", "LOGOUT",
+        "CONFIG_CHANGE", "DAEMON_CONFIG",
+        "SERVICE_START", "SERVICE_STOP",
+        "SYSCALL",
+    }
+
+    # Map auditd event type to our canonical event_type
+    EVENT_TYPE_MAP = {
+        "USER_LOGIN":    "user.login",
+        "USER_LOGOUT":   "user.logout",
+        "USER_START":    "user.session_start",
+        "USER_END":      "user.session_end",
+        "USER_AUTH":     "user.auth",
+        "USER_ACCT":     "user.acct",
+        "LOGIN":         "user.tty_login",
+        "LOGOUT":        "user.tty_logout",
+        "CONFIG_CHANGE": "audit.config_change",
+        "DAEMON_CONFIG": "audit.daemon_config",
+        "SERVICE_START": "service.start",
+        "SERVICE_STOP":  "service.stop",
+        "SYSCALL":       "syscall.exec",
+    }
+
+    # Capture SYSCALL only if it has one of these keys
+    SYSCALL_KEYS_OF_INTEREST = {
+        "sudo_use", "su_use", "passwd_changes", "shadow_changes",
+        "sudoers_changes", "sshd_config_changes", "time_change",
+    }
+
+    # Regex: parse "type=XXX msg=audit(TS:ID):"
+    RE_TYPE = re.compile(r"^type=(\S+)")
+    RE_MSG_TIMESTAMP = re.compile(r"msg=audit\((\d+\.\d+):(\d+)\)")
+    # Match key=value (value can be quoted string or unquoted token).
+    # Unquoted values cannot start with a quote (auditd concatenates res=success'AUID="...").
+    RE_KV = re.compile(r'(\w+)=(?:"([^"]*)"|([^\s\'"]+))')
+
+    def __init__(self):
+        pass
+
+    def parse(self, line: str) -> Optional[Dict[str, Any]]:
+        line = line.rstrip("\n")
+        if not line or not line.startswith("type="):
+            return None
+
+        # Extract type=
+        m_type = self.RE_TYPE.match(line)
+        if not m_type:
+            return None
+        auditd_type = m_type.group(1)
+
+        # Filter: skip non-interesting types
+        if auditd_type not in self.INTERESTING_TYPES:
+            return None
+
+        # Extract msg timestamp
+        m_ts = self.RE_MSG_TIMESTAMP.search(line)
+        if m_ts:
+            try:
+                unix_ts = float(m_ts.group(1))
+                event_time = datetime.fromtimestamp(unix_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{int((unix_ts % 1) * 1000):03d}Z"
+            except (ValueError, OSError):
+                event_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            event_id = int(m_ts.group(2))
+        else:
+            event_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            event_id = None
+
+        # For SYSCALL: filter to interesting keys only
+        if auditd_type == "SYSCALL":
+            m_key = re.search(r'key="([^"]*)"', line)
+            if not m_key or m_key.group(1) not in self.SYSCALL_KEYS_OF_INTEREST:
+                return None
+
+        # Parse all key=value pairs into dicts
+        kv_unquoted = {}
+        kv_quoted = {}
+        for m in self.RE_KV.finditer(line):
+            key = m.group(1)
+            if m.group(2) is not None:
+                kv_quoted[key] = m.group(2)
+            else:
+                kv_unquoted[key] = m.group(3)
+
+        # Extract common fields
+        pid = int(kv_unquoted["pid"]) if "pid" in kv_unquoted and kv_unquoted["pid"].isdigit() else None
+        uid = kv_unquoted.get("uid")
+        euid = kv_unquoted.get("euid")
+        auid = kv_unquoted.get("auid")
+        comm = kv_quoted.get("comm", "")
+        exe = kv_quoted.get("exe", "")
+        addr = kv_unquoted.get("addr")
+        key = kv_quoted.get("key")
+        syscall = kv_quoted.get("SYSCALL", "")
+        res = kv_unquoted.get("res", "")
+
+        # Severity mapping
+        is_failed = res in ("failed", "0") or res.startswith("fail")
+        if auditd_type == "USER_LOGIN" and is_failed:
+            severity = "ERROR"
+        elif auditd_type == "SYSCALL" and is_failed:
+            severity = "ERROR"
+        elif auditd_type in ("CONFIG_CHANGE", "DAEMON_CONFIG"):
+            severity = "WARN"
+        elif auditd_type in ("SERVICE_START", "SERVICE_STOP") and is_failed:
+            severity = "WARN"
+        else:
+            severity = "INFO"
+
+        # Map to canonical event type (detail also goes to rawData.event)
+        event_type = "log.line"  # Zod schema restricts to fixed set; detail in rawData.event
+        canonical_event = self.EVENT_TYPE_MAP.get(auditd_type, f"auditd.{auditd_type.lower()}")
+
+        # Build message excerpt
+        if auditd_type in ("USER_LOGIN", "USER_START"):
+            user = kv_quoted.get("UID") or uid or "?"
+            proto = "tty" if kv_unquoted.get("terminal", "none") != "none" else "remote"
+            message = f"{auditd_type}: {user}@{addr or 'localhost'} via {proto} ({'FAILED' if is_failed else 'success'})"
+        elif auditd_type == "SYSCALL":
+            message = f"{comm or 'process'} (pid={pid}) ran {syscall or 'syscall'} [{key}] {'FAILED' if is_failed else 'ok'}"
+        elif auditd_type == "CONFIG_CHANGE":
+            message = f"audit config changed: {comm or 'auditctl'} pid={pid} op={kv_unquoted.get('op', '?')}"
+        elif auditd_type in ("SERVICE_START", "SERVICE_STOP"):
+            m_unit = re.search(r"unit=([\w\-\.]+)", line)
+            unit = m_unit.group(1) if m_unit else "?"
+            message = f"{auditd_type}: {unit} ({'FAILED' if is_failed else 'ok'})"
+        else:
+            message = f"{auditd_type}: {comm or exe or '?'} (pid={pid}) res={res}"
+
+        # Truncate for dashboard
+        msg_excerpt = message[:240] + ("..." if len(message) > 240 else "")
+
+        return {
+            "event_type": event_type,
+            "severity": severity,
+            "source": "/var/log/audit/audit.log",
+            "message": msg_excerpt,
+            "raw_data": {
+                "event": canonical_event,
+                "auditd_type": auditd_type,
+                "event_id": event_id,
+                "pid": pid,
+                "uid": uid,
+                "euid": euid,
+                "auid": auid,
+                "comm": comm,
+                "exe": exe,
+                "addr": addr,
+                "key": key,
+                "syscall": syscall,
+                "res": res,
+                "eventTime": event_time,
+                "service": "AUDITD",
+                "parser": "auditd",
+                "raw_excerpt": line[:500],
+            },
+        }
+
+
 PARSERS: Dict[str, Any] = {
     "sshd": SshdParser,
     "syslog": SyslogParser,
     "mysql_audit": MysqlAuditParser,
     "pgaudit": PgAuditParser,
+    "auditd": AuditdParser,
 }
 
 
