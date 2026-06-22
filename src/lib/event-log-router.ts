@@ -117,8 +117,14 @@ export async function insertOrDedupEvent(
   }
 }
 
-// Dedup window: 5 minutes
+// Dedup window: 5 minutes (general events)
+// 2026-06-22: syslog.service.failed uses a SHORTER window (60s) so a
+// flapping service gets aggregated into one row instead of 30 rows/min.
+// 2026-06-22 update: switched to 5-minute window to keep visibility
+// of "is it STILL failing" while preventing dashboard spam (was 60s
+// which gave 14+ rows per flapping service per 10 min).
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+const SERVICE_FAILED_DEDUP_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * Extract dedup key from rawData + message.
@@ -223,15 +229,33 @@ async function insertSyslogEvent(
   // 2026-06-22: dedup look-up uses event_type + description (the old
   // raw_data->_dedupSig index is gone with the jsonb column drop). The
   // dedup window is the same (5 min default).
+  //
+  // SPECIAL CASE for syslog.service.failed: a flapping systemd unit
+  // (e.g. monitoring-agent restart-loop) produces 30 events/min with
+  // distinct timestamps embedded in the description. We dedup by
+  // (service, eventType) only and use a SHORTER 60s window so the count
+  // grows visibly with each new failure attempt, and after 60s of silence
+  // a fresh row is created.
+  const isServiceFailed = eventType === "syslog.service.failed" && service;
+  const serviceDedupStart = new Date(eventTime.getTime() - SERVICE_FAILED_DEDUP_WINDOW_MS);
   const existing = await prisma.tEventLogSyslog.findFirst({
-    where: {
-      agentId,
-      source: e.source,
-      severity: e.severity,
-      eventType,
-      description,
-      eventTime: { gte: dedupStart },
-    },
+    where: isServiceFailed
+      ? {
+          agentId,
+          source: e.source,
+          severity: e.severity,
+          eventType,
+          service,
+          eventTime: { gte: serviceDedupStart },
+        }
+      : {
+          agentId,
+          source: e.source,
+          severity: e.severity,
+          eventType,
+          description,
+          eventTime: { gte: dedupStart },
+        },
     select: { id: true },
   });
   if (existing) {
@@ -240,7 +264,11 @@ async function insertSyslogEvent(
       data: {
         count: { increment: 1 },
         eventTime,
-        description,
+        // For service.failed: keep the FIRST description (clearest signal
+        // "Main process exited, code=exited, status=1/FAILURE") but
+        // refresh eventTime so the row floats to the top.
+        // For others: refresh description in case details changed.
+        description: isServiceFailed ? undefined : description,
       },
     });
     return "deduped";

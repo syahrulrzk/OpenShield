@@ -1114,6 +1114,14 @@ class SyslogParser:
         'root',
         # systemd unit error prefix
         '(node)', '(uomi)',
+        # 2026-06-22: Network/filesystem noise (high volume, low signal)
+        'tailscaled',           # Tailscale VPN — periodic status pings
+        'nmbd', 'smbd',         # Samba — name/service broadcasts
+        'gpg-agent', 'gcr-prompter', 'gnome-keyring', 'gnome-keyring-d',
+        'augenrules',           # audit rules loader — loads on boot
+        'Tor',                  # Tor daemon — circuits handshakes
+        'polkitd', 'polkit-agent-helper',  # polkit — frequent auth checks
+        'accounts-daemon',
     })
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1430,6 +1438,11 @@ class SyslogParser:
                 # user, source_ip, description). Without this the view
                 # would always show user=- and source_ip=-.
                 **self._match_user_ip(msg, event_type or 'syslog.line'),
+                # 2026-06-22: extract systemd unit name for service.* events
+                # so server event-log-router can dedup a flapping service
+                # (e.g. monitoring-agent restart-loop producing 30 events/min)
+                # into a single row with growing count.
+                **({"service": unit} if (unit := self._extract_service_unit(msg)) else {}),
             },
         )
 
@@ -1467,6 +1480,29 @@ class SyslogParser:
         if m:
             return {"user": m.group(1), "ip": None, "port": None}
         return {"user": None, "ip": None, "port": None}
+
+    @staticmethod
+    def _extract_service_unit(msg: str) -> Optional[str]:
+        """
+        Extract systemd unit name from syslog message.
+
+        Patterns handled:
+          - "monitoring-agent.service: Main process exited..."
+          - "Started nginx.service."
+          - "Stopped mysql.service."
+          - "Failed with result 'exit-code'." (need surrounding context for unit)
+        Returns unit name like "monitoring-agent.service" or None.
+        """
+        import re as _re
+        # Unit name before ".service: ..." (most specific)
+        m = _re.search(r'\b([a-z0-9][a-z0-9_.+-]*\.service)(?::\s|$)', msg, _re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Unit name in "Started X.service." / "Stopped X.service." patterns
+        m = _re.search(r'\b(?:Started|Stopped|Failed|Reloaded|Reached target)\s+([a-z0-9][a-z0-9_.+-]*\.[a-z]+)\b', msg, _re.IGNORECASE)
+        if m:
+            return m.group(1)
+        return None
 
     def _make_event(self, severity, event_type, source_app, pid, message, raw):
         # 2026-06-22: also include category in raw_data so UI can group/filter
