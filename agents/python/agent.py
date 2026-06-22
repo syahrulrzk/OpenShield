@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -1025,13 +1025,464 @@ class PgAuditParser:
 
 class SyslogParser:
     """
-    Stub parser for syslog — emits all lines as INFO by default.
-    Syslog is too noisy (kernel/dhclient/cron), so we recommend
-    keeping it disabled in agent.yaml. Add filters here if needed.
+    Parse Linux syslog (/var/log/syslog, /var/log/messages) lines.
+
+    Supports two formats:
+      1. RFC 5424: "<PRI>VERSION SP TIMESTAMP SP HOSTNAME SP APPNAME PROCID MSGID MSG"
+         Example: "<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 BOMAn application event log entry..."
+      2. RFC 3164 (legacy/BSD): "TIMESTAMP HOSTNAME TAG[PID]: MESSAGE"
+         Example: "Jun 22 07:36:01 reborn sshd[12345]: Failed password for root from 1.2.3.4 port 22 ssh2"
+
+    Severity mapping (RFC 5424 §6.1.1):
+      0 emerg    → ERROR
+      1 alert    → ERROR
+      2 crit     → ERROR
+      3 err      → ERROR
+      4 warning  → WARN
+      5 notice   → INFO
+      6 info     → INFO
+      7 debug    → INFO
+
+    Auth/security pattern detection (severity upgrade):
+      - sshd lines mentioning auth (Failed password, Invalid user, Accepted, Disconnecting, Connection closed)
+      - sudo / su / pam_unix messages
+      - useradd / usermod / groupadd / passwd / chpasswd changes
+      - polkit / pkexec privilege events
+
+    Default noise filter (these sources are skipped unless they match an auth pattern):
+      - rsyslogd, systemd, kernel, cron, CRON, anacron, chronyd, ntpd, dhclient,
+        dbus-daemon, NetworkManager, wpa_supplicant, avahi-daemon
+
+    Emits 'log.line' events with:
+      - severity from syslog priority (mapped to ERROR/WARN/INFO)
+      - eventType from auth pattern detection if matched, else 'syslog.line'
+      - raw_data includes: priority, facility, source_app, pid, message, parser='syslog'
     """
 
+    import re
+
+    # ─────────────────────────────────────────────────────────────────────
+    # RFC 5424 PRI header: <NNN>
+    # ─────────────────────────────────────────────────────────────────────
+    RE_PRI = re.compile(r'^<(\d{1,3})>')
+
+    # ─────────────────────────────────────────────────────────────────────
+    # RFC 3164 / BSD header: "Mon DD HH:MM:SS HOSTNAME TAG[PID]: MESSAGE"
+    # (some systems use ISO timestamp here too)
+    # ─────────────────────────────────────────────────────────────────────
+    RE_BSD = re.compile(
+        r'^(?P<ts>(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)|'
+        r'(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}))\s+'
+        r'(?P<host>\S+)\s+'
+        r'(?P<tag>[^\s\[:]+)(?:\[(?P<pid>\d+)\])?:\s*'
+        r'(?P<msg>.*)$'
+    )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # RFC 5424 MSG (after PRI stripped): "VERSION TIMESTAMP HOSTNAME APPNAME PROCID MSGID MSG"
+    # VERSION is single digit, TIMESTAMP is ISO8601
+    # ─────────────────────────────────────────────────────────────────────
+    RE_RFC5424 = re.compile(
+        r'^\d+\s+'                              # VERSION
+        r'(?P<ts>\S+)\s+'                       # TIMESTAMP (ISO)
+        r'(?P<host>\S+)\s+'                     # HOSTNAME
+        r'(?P<app>\S+)\s+'                      # APPNAME
+        r'(?P<proc>\S+)\s+'                     # PROCID
+        r'\S+\s+'                               # MSGID
+        r'(?:\[(?P<sd>.*?)\]\s*)?'              # optional STRUCTURED-DATA
+        r'(?P<msg>.*)$'                         # MSG
+    )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Noisy apps/services to skip by default (unless they match an auth pattern)
+    # ─────────────────────────────────────────────────────────────────────
+    NOISE_SOURCES = frozenset({
+        # System / init
+        'rsyslogd', 'systemd', 'systemd-logind', 'systemd-networkd',
+        'systemd-resolved', 'systemd-udevd', 'systemd-timesyncd',
+        'kernel', 'cron', 'CRON', 'anacron',
+        'chronyd', 'ntpd', 'ntpdate', 'systemd-timedated',
+        'dhclient', 'NetworkManager', 'wpa_supplicant',
+        'dbus-daemon', 'avahi-daemon', 'cupsd', 'bolt',
+        'thermald', 'snapd', 'packagekitd', 'unattended-upgrades',
+        'motd-news', 'ssh-agent',
+        # Container / virtualization
+        'dockerd', 'containerd', 'docker', 'kubelet',
+        # OpenShield itself (agent + dev server)
+        'python3', 'openshield-dev', 'next-server', 'prisma',
+        # Generic logger wrapper
+        'root',
+        # systemd unit error prefix
+        '(node)', '(uomi)',
+    })
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Auth/security patterns. NOTE: BSD parser strips "app[pid]:" prefix
+    # before applying these, so patterns are PURE MESSAGE BODY only.
+    # ─────────────────────────────────────────────────────────────────────
+    AUTH_PATTERNS = (
+        # sshd
+        (re.compile(r'\b(?:Failed password|Invalid user|Accepted (?:password|publickey) for|Disconnecting|Connection (?:closed|reset)|error:\s*maximum authentication|reverse mapping checking|message repeated)', re.IGNORECASE), 'syslog.sshd', 'ERROR'),
+        # sudo
+        (re.compile(r'(?:COMMAND=|authentication failure|incorrect password attempts|user NOT in sudoers|problem with defaults entries)', re.IGNORECASE), 'syslog.sudo', 'WARN'),
+        # su
+        (re.compile(r'pam_unix\(su:|su\[\d+\]:', re.IGNORECASE), 'syslog.su', 'WARN'),
+        # PAM generic (only session opened/closed or failures)
+        (re.compile(r'pam_unix\(\S+\):\s*(?:authentication failure|check pass; user unknown|session opened|session closed|account expired)', re.IGNORECASE), 'syslog.pam', 'WARN'),
+        # user/group/passwd changes
+        (re.compile(r'\b(?:new user|user (?:added|removed|modified|changed)|password (?:changed|updated)|group (?:added|removed|modified)|chpasswd)', re.IGNORECASE), 'syslog.user_change', 'WARN'),
+        # polkit / pkexec privilege escalation
+        (re.compile(r'(?:Authentication (?:failed|denied) for|not authorized|polkit:|operator (?:NOT|unauthorized))', re.IGNORECASE), 'syslog.privilege', 'WARN'),
+        # login session lifecycle
+        (re.compile(r'\b(?:FAILED LOGIN|session (?:opened|closed) for user)', re.IGNORECASE), 'syslog.session', 'INFO'),
+    )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Non-auth security-relevant category patterns.
+    # Maps each category → list of (regex, event_type, severity).
+    # These run AFTER AUTH_PATTERNS (auth has priority) but BEFORE the noise
+    # filter, so events matching these categories are kept even from "noisy"
+    # sources like systemd/cron/dockerd.
+    # ─────────────────────────────────────────────────────────────────────
+
+    # 🔧 Service / systemd events
+    # NOTE: BSD parser already strips "systemd[1]:" prefix, so patterns match
+    # the PURE message body. RFC 5424 lines preserve the full form.
+    SERVICE_PATTERNS = (
+        # systemd: "Started nginx.service." / "Stopped nginx.service." etc
+        (re.compile(r'\b(?:Started|Stopped|Failed|Reloaded|Reached target|Stopped target|Started session)\s+[^\s.]+\.', re.IGNORECASE), 'syslog.service.started', 'INFO'),
+        # service failed specifically (high signal)
+        (re.compile(r'\.service:\s*(?:Main process exited|Failed with result|Unit entered failed state|Scheduled restart job|start request repeated too quickly)', re.IGNORECASE), 'syslog.service.failed', 'ERROR'),
+        # service stopped (was running)
+        (re.compile(r'\bStopped\s+[^\s.]+\.', re.IGNORECASE), 'syslog.service.stopped', 'WARN'),
+    )
+
+    # ⏰ Cron / scheduled task events
+    # NOTE: BSD parser already strips "CRON[1234]:" prefix.
+    CRON_PATTERNS = (
+        # CRON: "(root) CMD /path/to/command" — actual command run
+        (re.compile(r'\(?\S+\)?\s+CMD\s+\S+', re.IGNORECASE), 'syslog.cron.job', 'INFO'),
+        # crontab edited (persistence indicator!)
+        (re.compile(r'\b(?:REPLACE|CRONTAB_CMD|LIST\s+\S+|END\s+EDIT)', re.IGNORECASE), 'syslog.cron.edit', 'WARN'),
+        # anacron / at scheduled jobs
+        (re.compile(r'\b(?:anacron|at)\[\d+\]:\s+(?:Jobs will be executed|Will run job|Job `?)', re.IGNORECASE), 'syslog.cron.scheduled', 'INFO'),
+    )
+
+    # 🌐 Network events (interface, firewall, DHCP)
+    NETWORK_PATTERNS = (
+        # NetworkManager / systemd-networkd: link state
+        # Interface name can be eth0 (digit) OR ethXXX OR br0 OR vethXYZ
+        (re.compile(r'\b(?:state change|connected|disconnected|link\s+(?:\w+\s+)?(?:up|down)|activation|carrier (?:on|off)|new\s+IPv[46]?\s+address|connection (?:activated|deactivated))\b', re.IGNORECASE), 'syslog.network.link', 'INFO'),
+        # iptables / nftables / ufw blocked
+        (re.compile(r'\b(?:DROP|BLOCK|REJECT|DENY)\b.*?\b(?:SRC=|IN=|OUT=)', re.IGNORECASE), 'syslog.firewall.blocked', 'WARN'),
+        # DHCP
+        (re.compile(r'\b(?:DHCP(?:ACK|REQUEST|DISCOVER|NAK|RELEASE)|lease (?:obtained|expired|renewed))', re.IGNORECASE), 'syslog.network.dhcp', 'INFO'),
+    )
+
+    # 🐳 Container events (Docker, containerd, kubelet, podman)
+    # NOTE: Listed LAST in category check order because its patterns are
+    # broadest. More specific patterns (disk/kernel/service) take priority.
+    DOCKER_PATTERNS = (
+        # dockerd: container lifecycle (after app[pid]: stripped, just check verb)
+        (re.compile(r'\bcontainer\s+(?:start|stop|die|kill|destroy|create|pause|unpause|restart|rename|attach|detach|exec)\b', re.IGNORECASE), 'syslog.docker.container', 'INFO'),
+        # image ops
+        (re.compile(r'\bimage\s+(?:pull|push|load|save|tag|untag|remove|import|export)\b', re.IGNORECASE), 'syslog.docker.container', 'INFO'),
+        # docker daemon-specific errors (NOT generic error/denied which would
+        # over-match and steal events from disk/kernel/etc categories)
+        (re.compile(r'\b(?:Error response from daemon|docker\.sock|no such (?:container|image|network|volume)|conflict: container name|already in use by container)', re.IGNORECASE), 'syslog.docker.error', 'ERROR'),
+    )
+
+    # 💾 Disk / hardware / kernel events
+    DISK_PATTERNS = (
+        # disk full / no space
+        (re.compile(r'\b(?:No space left on device|disk full|ENOSPC|filesystem full|out of disk space|inode (?:full|exhausted))', re.IGNORECASE), 'syslog.disk.full', 'ERROR'),
+        # disk I/O errors
+        (re.compile(r'\b(?:I/O error|medium error|blk_update_request|sector|bad block|read-only filesystem|EXT4-fs error|XFS .* error)', re.IGNORECASE), 'syslog.disk.error', 'ERROR'),
+        # USB / hardware hotplug
+        (re.compile(r'\b(?:usb \d+-\d+:\s*new|usb \d+-\d+:.*?(?:disconnect|reset)|new USB device found|input:.*USB)', re.IGNORECASE), 'syslog.usb.device', 'INFO'),
+    )
+
+    KERNEL_PATTERNS = (
+        # kernel panic / oops
+        (re.compile(r'\b(?:kernel panic|Oops:|BUG:|general protection fault|kernel:.*Call Trace|kernel:.*RIP:|kernel BUG at)', re.IGNORECASE), 'syslog.kernel.panic', 'ERROR'),
+        # segfault
+        (re.compile(r'\bsegfault at \w+ ip \w+ sp \w+ error \d+', re.IGNORECASE), 'syslog.kernel.segfault', 'ERROR'),
+        # hardware errors (mcelog, EDAC, etc)
+        (re.compile(r'\b(?:Machine Check Exception|mce:\|Hardware error|MCE:\s+[0-9]|EDAC)', re.IGNORECASE), 'syslog.hardware.error', 'ERROR'),
+    )
+
+    # Package management (apt/yum/dnf) — persistence indicator
+    PACKAGE_PATTERNS = (
+        # apt installed / removed / configured / upgraded
+        (re.compile(r'\b(?:Setting up|Get:\d+|Unpacking|Preparing to unpack|Reading database|apt-get|yum|dnf|apk|pacman|zypper)\b', re.IGNORECASE), 'syslog.package.install', 'INFO'),
+        # dpkg action lines: "install", "remove", "purge", "configure"
+        (re.compile(r'\b(?:install|remove|purge|configure|upgrade|downgrade)\s+[a-z][\w.+-]+\s+(?:[\d.:+~a-z-]+)?\s*$', re.IGNORECASE), 'syslog.package.install', 'INFO'),
+    )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Category mapping: eventType prefix → UI category
+    # Used by UI/API to group events in the dashboard.
+    # ─────────────────────────────────────────────────────────────────────
+    CATEGORY_MAP = {
+        'syslog.sshd': 'auth',
+        'syslog.sudo': 'auth',
+        'syslog.su': 'auth',
+        'syslog.pam': 'auth',
+        'syslog.user_change': 'user',
+        'syslog.privilege': 'auth',
+        'syslog.session': 'auth',
+        'syslog.service': 'service',
+        'syslog.cron': 'cron',
+        'syslog.network': 'network',
+        'syslog.firewall': 'network',
+        'syslog.docker': 'docker',
+        'syslog.kubernetes': 'docker',
+        'syslog.disk': 'disk',
+        'syslog.usb': 'hardware',
+        'syslog.kernel': 'kernel',
+        'syslog.hardware': 'hardware',
+        'syslog.package': 'package',
+        'syslog.line': 'system',
+        'syslog.malformed': 'system',
+    }
+
+    @classmethod
+    def get_category(cls, event_type: str) -> str:
+        """Return UI category for an event type, e.g. 'syslog.sshd' → 'auth'."""
+        for prefix, cat in cls.CATEGORY_MAP.items():
+            if event_type.startswith(prefix):
+                return cat
+        return 'other'
+
+    # Map RFC 5424 severity (0-7) → our canonical severity
+    SEVERITY_MAP = {
+        0: 'ERROR',  # emerg
+        1: 'ERROR',  # alert
+        2: 'ERROR',  # crit
+        3: 'ERROR',  # err
+        4: 'WARN',   # warning
+        5: 'INFO',   # notice
+        6: 'INFO',   # info
+        7: 'INFO',   # debug
+    }
+
+    SEVERITY_NAMES = {
+        0: 'emerg', 1: 'alert', 2: 'crit', 3: 'err',
+        4: 'warning', 5: 'notice', 6: 'info', 7: 'debug',
+    }
+
+    def __init__(self, source_path: str = '/var/log/syslog'):
+        self.source_path = source_path
+
     def parse(self, line: str) -> Optional[Dict[str, Any]]:
-        return None  # disabled by default; see audit notes
+        line = line.rstrip('\n')
+        if not line:
+            return None
+
+        # ── Step 1: extract PRI (RFC 5424) if present ─────────────────────
+        pri = None
+        m_pri = self.RE_PRI.match(line)
+        if m_pri:
+            pri = int(m_pri.group(1))
+            line = self.RE_PRI.sub('', line, count=1)
+            facility = pri >> 3
+            severity_num = pri & 0x07
+        else:
+            facility = None
+            severity_num = None
+
+        # ── Step 2: parse header. Try BSD first; if no PRI was given,
+        #             fall back to RFC 5424 structure.
+        m_bsd = self.RE_BSD.match(line)
+        if m_bsd:
+            app = m_bsd.group('tag')
+            pid = m_bsd.group('pid')
+            msg = m_bsd.group('msg')
+            line_format = 'bsd'
+        elif pri is not None:
+            # Had PRI, BSD regex didn't match → must be RFC 5424
+            m_5424 = self.RE_RFC5424.match(line)
+            if m_5424:
+                app = m_5424.group('app')
+                pid = m_5424.group('proc')
+                msg = m_5424.group('msg')
+                line_format = 'rfc5424'
+            else:
+                # PRI but malformed MSG — emit as malformed
+                return self._make_event(
+                    severity='INFO',
+                    event_type='syslog.malformed',
+                    source_app='unknown',
+                    pid=None,
+                    message=line[:500],
+                    raw={
+                        'parser': 'syslog',
+                        'priority': pri,
+                        'facility': facility,
+                        'severityNum': severity_num,
+                        'severityName': self.SEVERITY_NAMES.get(severity_num),
+                        'sourceApp': 'unknown',
+                        'pid': None,
+                        'eventKind': 'syslog.malformed',
+                        'authDetected': False,
+                        'note': 'malformed_rfc5424',
+                    },
+                )
+        else:
+            # No PRI, no BSD header → totally unparseable
+            return self._make_event(
+                severity='INFO',
+                event_type='syslog.malformed',
+                source_app='unknown',
+                pid=None,
+                message=line[:500],
+                raw={
+                    'parser': 'syslog',
+                    'priority': None,
+                    'facility': None,
+                    'severityNum': None,
+                    'severityName': None,
+                    'sourceApp': 'unknown',
+                    'pid': None,
+                    'eventKind': 'syslog.malformed',
+                    'authDetected': False,
+                    'note': 'unparseable_header',
+                },
+            )
+
+        # ── Step 3: detect auth/security pattern ─────────────────────────
+        is_auth_event = False
+        auth_event_type = None
+        auth_severity = None
+        for pattern, ev_type, ev_sev in self.AUTH_PATTERNS:
+            if pattern.search(msg):
+                is_auth_event = True
+                auth_event_type = ev_type
+                auth_severity = ev_sev
+                break
+
+        # ── Step 3.5: detect non-auth security-relevant category ──────────
+        # These take priority over the generic 'syslog.line' fallback but
+        # lose to AUTH_PATTERNS (security events are more important).
+        # Order matters: specific patterns first (disk/kernel), broad patterns
+        # last (docker) so we don't misclassify an "error" line as docker.
+        category_event_type = None
+        category_severity = None
+        for patterns_tuple in (self.KERNEL_PATTERNS, self.DISK_PATTERNS,
+                                self.SERVICE_PATTERNS, self.CRON_PATTERNS,
+                                self.NETWORK_PATTERNS, self.PACKAGE_PATTERNS,
+                                self.DOCKER_PATTERNS):
+            for pattern, ev_type, ev_sev in patterns_tuple:
+                if pattern.search(msg):
+                    category_event_type = ev_type
+                    category_severity = ev_sev
+                    break
+            if category_event_type:
+                break
+
+        # ── Step 4: noise filter (skip noisy sources unless auth/event) ──
+        # Skip noise only if NOT auth and NOT in a tracked category.
+        if app in self.NOISE_SOURCES and not is_auth_event and not category_event_type:
+            return None
+
+        # ── Step 5: determine severity ───────────────────────────────────
+        if is_auth_event:
+            severity = auth_severity
+            event_type = auth_event_type
+        elif category_event_type:
+            severity = category_severity
+            event_type = category_event_type
+        elif severity_num is not None:
+            severity = self.SEVERITY_MAP[severity_num]
+            event_type = 'syslog.line'
+        else:
+            severity = 'INFO'
+            event_type = 'syslog.line'
+
+        pid_int = int(pid) if pid and pid.isdigit() else None
+
+        return self._make_event(
+            severity=severity,
+            event_type=event_type,
+            source_app=app,
+            pid=pid_int,
+            message=msg[:500],
+            raw={
+                'parser': 'syslog',
+                'format': line_format,
+                'priority': pri,
+                'facility': facility,
+                'severityNum': severity_num,
+                'severityName': self.SEVERITY_NAMES.get(severity_num) if severity_num is not None else None,
+                'sourceApp': app,
+                'pid': pid_int,
+                'eventKind': event_type,
+                'authDetected': is_auth_event,
+                # 2026-06-22: server event-log-router populates the
+                # `process` column of t_event_log_syslog from rawData.process.
+                # Without this alias the column stays NULL and the UI shows
+                # no application/process label. (Same as SshdParser which
+                # sets rawData.process from the matched tag.)
+                'process': app,
+                # 2026-06-22: extract user + ip from common syslog auth
+                # patterns so the UI can display the flat columns Bos
+                # wants (id, timestamp, agent, event_type, severity,
+                # user, source_ip, description). Without this the view
+                # would always show user=- and source_ip=-.
+                **self._match_user_ip(msg, event_type or 'syslog.line'),
+            },
+        )
+
+
+    @staticmethod
+    def _match_user_ip(msg: str, event_kind: str) -> Dict[str, Optional[str]]:
+        """
+        Extract username + source IP from syslog message body.
+
+        Patterns handled (in priority order):
+          - sshd: "Failed password for {user} from {ip} port ..."
+          - sshd: "Accepted password for {user} from {ip} port ..."
+          - sshd: "Invalid user {user} from {ip}"
+          - sudo: " {user} : TTY=... ; USER=root ; COMMAND=..."
+          - su:   "su[...]: pam_unix(su:session): session opened for user {user} by ..."
+          - useradd: "new user: name={user}, UID=..."
+          - polkit: "Authentication failed for user {user}"
+        Returns dict with keys: user, ip, port (port extracted when present).
+        """
+        import re as _re
+        m = _re.search(r'\b(?:Failed\s+password|Invalid\s+user|Accepted\s+(?:password|publickey)|Authentication\s+(?:failed|denied))\s+for(?:\s+user)?\s+([^\s]+)\s+from\s+(\S+)', msg, _re.IGNORECASE)
+        if m:
+            return {"user": m.group(1), "ip": m.group(2), "port": None}
+        # sshd "Disconnecting ... [preauth]" or "Connection closed" — no user
+        # sudo "user : TTY=..."
+        m = _re.search(r'^([a-z_][a-z0-9_-]{0,31})\s*:\s*TTY=', msg, _re.IGNORECASE)
+        if m:
+            return {"user": m.group(1), "ip": None, "port": None}
+        # useradd / usermod
+        m = _re.search(r'\bnew user:\s*name=([^,\s]+)', msg, _re.IGNORECASE)
+        if m:
+            return {"user": m.group(1), "ip": None, "port": None}
+        # generic
+        m = _re.search(r'user[=:]\s*([a-z_][a-z0-9_-]{0,31})', msg, _re.IGNORECASE)
+        if m:
+            return {"user": m.group(1), "ip": None, "port": None}
+        return {"user": None, "ip": None, "port": None}
+
+    def _make_event(self, severity, event_type, source_app, pid, message, raw):
+        # 2026-06-22: also include category in raw_data so UI can group/filter
+        # without re-deriving on every render. Source of truth = eventType prefix.
+        return {
+            'event_type': 'log.line',
+            'severity': severity,
+            'source': self.source_path,
+            'message': message,
+            'raw_data': {
+                **raw,
+                'category': self.get_category(event_type),
+                'eventKind': event_type,  # explicit alias for UI/API consumers
+            },
+        }
+
 
 
 class AuditdParser:

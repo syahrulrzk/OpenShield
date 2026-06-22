@@ -45,6 +45,20 @@ export type GroupedServerAuthRow = RawServerAuthRow & {
   sessionSubsessions: string[];
   /** Total events in the session (1 = no subsessions, primary is the only event) */
   sessionEventCount: number;
+  /**
+   * Service of the session group, derived from the most-specific event in
+   * the group:
+   *   - if any `sftp_session` → "SFTP"
+   *   - else if any `scp_session` → "SCP"
+   *   - else → primary row's service (usually "sshd"/"SSH")
+   *
+   * 2026-06-21: Added after Bos feedback "nah 1 log nih, tpi knpa service
+   * ya ssh ya bro, padahal gw login sftp" — the previous logic surfaced
+   * the primary event's service ("sshd"), losing the actual session type
+   * (SFTP/SCP). The user actually did SFTP, so the service label should
+   * reflect that, not the underlying terminal SSH.
+   */
+  groupService: string;
 };
 
 // Priority: highest = most informative. Keep this event as the primary row
@@ -95,6 +109,26 @@ function eventKeyFromRaw(raw: string | null | undefined): string {
   return "unknown";
 }
 
+/** Derive the session group's service from the events in the group.
+ *
+ *  If the session included an SFTP or SCP subsystem event, that wins over
+ *  the underlying terminal SSH — because that's what the user actually did.
+ *  Otherwise fall back to the primary event's service (usually "sshd").
+ */
+function deriveGroupService(groupRows: RawServerAuthRow[]): string {
+  let sawSftp = false;
+  let sawScp = false;
+  for (const r of groupRows) {
+    const raw = r.raw || "";
+    if (raw.includes("|sshd.sftp_session")) sawSftp = true;
+    else if (raw.includes("|sshd.scp_session")) sawScp = true;
+  }
+  if (sawSftp) return "SFTP";
+  if (sawScp) return "SCP";
+  // Fallback: primary row's service, uppercased for SERVICE_META lookup
+  return (groupRows[0].service || "sshd").toUpperCase();
+}
+
 export function groupBySession(rows: RawServerAuthRow[]): GroupedServerAuthRow[] {
   // Pre-filter: drop low-signal events (shell_session, conn_closed,
   // command_session with no command, connection handshake).
@@ -133,6 +167,7 @@ export function groupBySession(rows: RawServerAuthRow[]): GroupedServerAuthRow[]
       ...primary,
       sessionSubsessions: [...new Set(visibleSubs)],
       sessionEventCount: groupRows.length,
+      groupService: deriveGroupService(groupRows),
     });
   }
   // Final order: most recent first

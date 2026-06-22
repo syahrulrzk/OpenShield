@@ -266,11 +266,37 @@ model TEventLogSyslog {
   pid       Int?
   // Hostname where the log originated
   hostname  String?
-  // Truncated message (240 chars) for dashboard. Full message in rawData->full_message.
-  message   String
-  // Structured details: full_message, _dedupSig, parser, eventTime, etc.
-  rawData   Json?    @map("raw_data")
+
+  // ----- Flat fields (2026-06-22, was raw_data jsonb) -----
+  // 2026-06-22: per Bos, the syslog table now mirrors the example shape
+  //   id | timestamp | agent | event_type | severity | user | source_ip |
+  //   description
+  // Columns are first-class (typed, indexable, queryable) instead of
+  // buried in a jsonb. The agent writes these directly. Old jsonb-only
+  // fields (format, note, parser, severityName, etc.) were dropped.
   eventTime DateTime @map("event_time")
+  // Event type: syslog.sshd | syslog.sudo | syslog.user_change | ...
+  //             | log.line (generic) | syslog.malformed
+  eventType    String   @default("log.line") @map("event_type")
+  // Extracted username (NULL when not mentioned in the log line)
+  user         String?
+  // Extracted source IP (NULL when not mentioned)
+  sourceIp     String?  @map("source_ip")
+  // Full message — the new "description" column for the dashboard
+  description  String
+  // Denormalized agent name (no JOIN needed in API/UI queries)
+  agentName    String?  @map("agent_name")
+  // Syslog facility (0-23) — only set for RFC 5424 lines
+  facility     Int?
+  // Syslog priority (0-191) — only set for RFC 5424 lines
+  priority     Int?
+  // True when the parser flagged this as auth-relevant
+  authDetected Boolean? @map("auth_detected")
+  // Service tag if extracted: "sshd" | "sudo" | "pam" | ...
+  service      String?
+  // Network port if mentioned in the log line
+  port         Int?
+  // Dedup aggregation count
   count     Int      @default(1)
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -280,6 +306,10 @@ model TEventLogSyslog {
   @@index([severity, eventTime(sort: Desc)])
   @@index([process, eventTime(sort: Desc)])
   @@index([source, eventTime(sort: Desc)])
+  @@index([eventType, eventTime(sort: Desc)])
+  @@index([sourceIp, eventTime(sort: Desc)])
+  @@index([user, eventTime(sort: Desc)])
+  @@index([authDetected, eventTime(sort: Desc)])
   @@map("t_event_log_syslog")
 }
 

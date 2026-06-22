@@ -84,9 +84,23 @@ export async function insertOrDedupEvent(
   const eventTime = new Date(e.eventTime);
   const dedupStart = new Date(eventTime.getTime() - DEDUP_WINDOW_MS);
 
+  // 2026-06-22: Look up agentName once per batch so insertSyslogEvent can
+  // populate the denormalized column. Cheap (single indexed lookup, then
+  // shared across all events in the batch). Avoids N+1 queries.
+  let cachedAgentName: string | null = null;
+  try {
+    const agent = await prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { name: true },
+    });
+    cachedAgentName = agent?.name ?? null;
+  } catch {
+    // best-effort: if agent lookup fails, events still insert with agentName=null
+  }
+
   switch (target) {
     case "syslog":
-      return await insertSyslogEvent(agentId, e, dedupSig, eventTime, dedupStart);
+      return await insertSyslogEvent(agentId, e, dedupSig, eventTime, dedupStart, cachedAgentName);
     case "server_auth":
       return await insertServerAuthEvent(agentId, e, dedupSig, eventTime, dedupStart);
     case "fim":
@@ -179,20 +193,43 @@ async function insertSyslogEvent(
   e: IncomingEvent,
   dedupSig: string,
   eventTime: Date,
-  dedupStart: Date
+  dedupStart: Date,
+  agentName: string | null
 ): Promise<"inserted" | "deduped"> {
-  const rawData = e.rawData as Record<string, unknown> | undefined;
-  const process = typeof rawData?.process === "string" ? rawData.process : null;
-  const hostname = typeof rawData?.hostname === "string" ? rawData.hostname : null;
-  const pid = typeof rawData?.pid === "number" ? rawData.pid :
-              typeof rawData?.pid === "string" && /^\d+$/.test(rawData.pid) ? parseInt(rawData.pid, 10) : null;
+  // 2026-06-22: t_event_log_syslog now uses flat typed columns instead of
+  // a jsonb raw_data. Extract all the interesting fields from the agent's
+  // raw_data payload and write them to the typed columns directly.
+  const rawData = (e.rawData as Record<string, unknown> | undefined) ?? {};
+  const process = typeof rawData.process === "string" ? rawData.process : null;
+  const hostname = typeof rawData.hostname === "string" ? rawData.hostname : null;
+  const pid = typeof rawData.pid === "number" ? rawData.pid :
+              typeof rawData.pid === "string" && /^\d+$/.test(rawData.pid) ? parseInt(rawData.pid, 10) : null;
 
+  // Flat fields (was raw_data->>'...' in old schema)
+  const eventType    = typeof rawData.eventKind === "string" && rawData.eventKind
+                       ? rawData.eventKind
+                       : "log.line";
+  const user         = typeof rawData.user === "string" && rawData.user ? rawData.user : null;
+  const sourceIp     = typeof rawData.ip === "string" && rawData.ip ? rawData.ip : null;
+  const description  = typeof rawData.full_message === "string" && rawData.full_message
+                       ? rawData.full_message
+                       : e.message;
+  const facility     = typeof rawData.facility === "number" ? rawData.facility : null;
+  const priority     = typeof rawData.priority === "number" ? rawData.priority : null;
+  const authDetected = typeof rawData.authDetected === "boolean" ? rawData.authDetected : null;
+  const service      = typeof rawData.service === "string" && rawData.service ? rawData.service : null;
+  const port         = typeof rawData.port === "number" ? rawData.port : null;
+
+  // 2026-06-22: dedup look-up uses event_type + description (the old
+  // raw_data->_dedupSig index is gone with the jsonb column drop). The
+  // dedup window is the same (5 min default).
   const existing = await prisma.tEventLogSyslog.findFirst({
     where: {
       agentId,
       source: e.source,
       severity: e.severity,
-      rawData: { path: ["_dedupSig"], equals: dedupSig },
+      eventType,
+      description,
       eventTime: { gte: dedupStart },
     },
     select: { id: true },
@@ -203,8 +240,7 @@ async function insertSyslogEvent(
       data: {
         count: { increment: 1 },
         eventTime,
-        message: e.message,
-        rawData: { ...(rawData || {}), _dedupSig: dedupSig } as Prisma.InputJsonValue,
+        description,
       },
     });
     return "deduped";
@@ -212,14 +248,24 @@ async function insertSyslogEvent(
   await prisma.tEventLogSyslog.create({
     data: {
       agentId,
+      // 2026-06-22: populate agentName from caller so the UI doesn't
+      // render "—" for events without the joined agent relation.
+      agentName,
       severity: e.severity,
       source: e.source,
       process,
       pid,
       hostname,
-      message: e.message,
-      rawData: { ...(rawData || {}), _dedupSig: dedupSig } as Prisma.InputJsonValue,
       eventTime,
+      eventType,
+      user,
+      sourceIp,
+      description,
+      facility,
+      priority,
+      authDetected,
+      service,
+      port,
       count: 1,
     },
   });

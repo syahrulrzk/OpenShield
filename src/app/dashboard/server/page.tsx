@@ -392,9 +392,11 @@ export default async function ServerEventsPage({
         ip: e.sourceIp,
         status: e.status,
         method: e.method,
-        service: typeof e.service === "string" && e.service.length > 0
-          ? e.service.toUpperCase()
-          : null,
+        service: e.groupService ?? (
+          typeof e.service === "string" && e.service.length > 0
+            ? e.service.toUpperCase()
+            : null
+        ),
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
         // Session grouping metadata: how many events were merged and which

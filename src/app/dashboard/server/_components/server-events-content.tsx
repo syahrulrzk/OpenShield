@@ -72,10 +72,38 @@ function getEventStatus(severity: string, message: string): EventStatus {
   return "FAILED";
 }
 
+// 2026-06-22: Category helpers for badge rendering (syslog.* events only).
+// Must stay in sync with CATEGORY_PREFIXES in syslog/page.tsx + API route.ts.
+const CATEGORY_BADGE_META: Record<string, { color: string; emoji: string; label: string }> = {
+  auth:     { color: "#ef4444", emoji: "🔐", label: "Auth" },
+  user:     { color: "#f97316", emoji: "👤", label: "User" },
+  service:  { color: "#3b82f6", emoji: "⚙️", label: "Service" },
+  cron:     { color: "#a855f7", emoji: "⏰", label: "Cron" },
+  network:  { color: "#06b6d4", emoji: "🌐", label: "Network" },
+  docker:   { color: "#0ea5e9", emoji: "🐳", label: "Docker" },
+  disk:     { color: "#eab308", emoji: "💾", label: "Disk" },
+  kernel:   { color: "#dc2626", emoji: "🧠", label: "Kernel" },
+  hardware: { color: "#84cc16", emoji: "🔌", label: "Hardware" },
+  package:  { color: "#ec4899", emoji: "📦", label: "Package" },
+  system:   { color: "#71717a", emoji: "⚪", label: "System" },
+};
+function categoryColor(c: string): string {
+  return CATEGORY_BADGE_META[c]?.color ?? "#71717a";
+}
+function categoryEmoji(c: string): string {
+  return CATEGORY_BADGE_META[c]?.emoji ?? "⚪";
+}
+
 function getEventIp(rawData: unknown, message: string): string | null {
   if (rawData && typeof rawData === "object" && !Array.isArray(rawData)) {
     const ip = (rawData as Record<string, unknown>).ip;
     if (typeof ip === "string" && ip.length > 0 && ip !== "0.0.0.0") return ip;
+  }
+  // 2026-06-22: the /api/events/server endpoint (sourceType=syslog) now
+  // returns a flat `source_ip` column on each row. Read it before falling
+  // back to message regex (which is slow + lossy). Skip null/empty.
+  if (typeof (rawData as any)?.source_ip === "string" && (rawData as any).source_ip) {
+    return (rawData as any).source_ip;
   }
   const m =
     message.match(/\b((?:\d{1,3}\.){3}\d{1,3})\b/) ??
@@ -95,6 +123,10 @@ function getEventUser(rawData: unknown, message: string): string | null {
     const rd = rawData as Record<string, unknown>;
     const u = rd.user ?? rd.username ?? rd.account ?? rd.subject ?? rd.targetUser;
     if (typeof u === "string" && u.length > 0) return u;
+  }
+  // 2026-06-22: flat `user` column from API (sourceType=syslog).
+  if (typeof (rawData as any)?.user === "string" && (rawData as any).user) {
+    return (rawData as any).user;
   }
   const kvMatch = message.match(/\buser=([a-zA-Z0-9._\-\[\]]+)/);
   if (kvMatch) return kvMatch[1];
@@ -183,6 +215,69 @@ function getEventType(rawData: unknown, message: string, source: string): string
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Syslog eventKind (raw_data.eventKind) — set by SyslogParser when an auth/
+// security pattern is detected inside a syslog line. More specific than
+// the generic "Service" column (which uses message regex).
+//
+// Examples:
+//   rawData.eventKind = "syslog.sshd"        → "SSHD" with violet badge
+//   rawData.eventKind = "syslog.sudo"        → "SUDO"
+//   rawData.eventKind = "syslog.user_change" → "USER CHANGE"
+//   rawData.eventKind = "syslog.privilege"   → "PRIVILEGE"
+//
+// rawData.authDetected = true means the syslog parser identified the line
+// as security-relevant even if the source app is normally noisy.
+// ────────────────────────────────────────────────────────────────────────────
+
+const EVENT_KIND_META: Record<
+  string,
+  { label: string; color: string; short: string }
+> = {
+  "syslog.sshd": { label: "SSHD", short: "sshd", color: "#a78bfa" }, // violet-400
+  "syslog.sudo": { label: "SUDO", short: "sudo", color: "#c084fc" }, // violet-500
+  "syslog.su": { label: "SU", short: "su", color: "#c084fc" },
+  "syslog.pam": { label: "PAM", short: "pam", color: "#c084fc" },
+  "syslog.user_change": {
+    label: "USER CHANGE",
+    short: "useradd",
+    color: "#f59e0b",
+  }, // amber
+  "syslog.privilege": {
+    label: "PRIVILEGE",
+    short: "polkit",
+    color: "#ef4444",
+  }, // red
+  "syslog.session": { label: "SESSION", short: "session", color: "#10b981" }, // emerald
+  "syslog.line": { label: "SYSLOG LINE", short: "syslog", color: "#71717a" }, // zinc
+  "syslog.malformed": {
+    label: "MALFORMED",
+    short: "?",
+    color: "#ef4444",
+  },
+};
+
+function getEventKind(rawData: unknown): {
+  kind: string;
+  meta: (typeof EVENT_KIND_META)[string];
+  authDetected: boolean;
+} | null {
+  if (!rawData || typeof rawData !== "object" || Array.isArray(rawData)) return null;
+  const rd = rawData as Record<string, unknown>;
+  const kind = typeof rd.eventKind === "string" ? rd.eventKind : null;
+  if (!kind) return null;
+  // Only treat syslog.* kinds as "eventKind" — other eventTypes are surfaced
+  // via getEventType() service column.
+  if (!kind.startsWith("syslog.")) return null;
+  const meta = EVENT_KIND_META[kind] ?? {
+    label: kind.toUpperCase(),
+    short: kind,
+    color: "#71717a",
+  };
+  const authDetected = rd.authDetected === true;
+  return { kind, meta, authDetected };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -195,7 +290,12 @@ type ServerEvent = {
   eventTime: string;
   count: number;
   status: EventStatus;
-  agent: { name: string; hostname: string | null; ip: string | null };
+  // Optional: page.tsx returns agent relation, API route.ts returns agentName (flat) only.
+  // Both possible — render code must fall back.
+  agent?: { name: string; hostname: string | null; ip: string | null } | null;
+  agentName?: string | null;
+  // 2026-06-22: category for badge rendering (syslog.* event types only)
+  category?: string | null;
 };
 
 export type ServerEventsData = {
@@ -204,10 +304,24 @@ export type ServerEventsData = {
   displayed: number;
   filteredTotal: number;
   statusCounts: Record<EventStatus, number>;
-  statusFilter: string;
+  statusFilter: EventStatus | "all";
   range: string;
   q: string;
   hideRevoked: boolean;
+  /**
+   * When true, syslog noise (agent heartbeat, prisma debug, request logs)
+   * is INCLUDED in the results. Default false on /dashboard/events/syslog.
+   * Pass via URL ?showNoise=1.
+   *
+   * 2026-06-22: Added after Bos noted syslog page was 33% noise — too many
+   * agent self-report rows making real events hard to find.
+   */
+  showNoise?: boolean;
+  kindCounts?: Record<string, number>;
+  authCount?: number;
+  // 2026-06-22: category stats + active filter (syslog page)
+  categoryCounts?: Record<string, number>;
+  activeCategory?: string | null;
   /**
    * Whether low-signal `sshd.connection` events are shown in the UI.
    * Default false (hidden) — they only carry connection metadata, no auth
@@ -215,6 +329,18 @@ export type ServerEventsData = {
    * session carries the actual data. Toggle in the toolbar to opt-in.
    */
   showConnection?: boolean;
+  /**
+   * 2026-06-22: dropdown filter options for USER / AGENT / SOURCE PORT.
+   * Computed server-side from current filter context (top N values + counts).
+   * Empty array means no values available (column is unused for this dataset).
+   */
+  userOptions?: DropdownOption[];
+  agentOptions?: DropdownOption[];
+  portOptions?: DropdownOption[];
+  /** Currently applied value of each filter (from URL) */
+  userFilter?: string;
+  agentFilter?: string;
+  portFilter?: string;
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -390,6 +516,51 @@ export function ServerEventsContent({
         />
       </div>
 
+      {/* ── Syslog eventKind breakdown (only when syslog page) ──────────────
+       * 2026-06-22: After activating SyslogParser, the page can show a
+       * distribution of syslog event kinds parsed by the agent. This helps
+       * the operator see at-a-glance what categories of events the syslog
+       * is producing (e.g. SSHD: 12, SUDO: 5, USER CHANGE: 1).
+       * ──────────────────────────────────────────────────────────────── */}
+      {data.kindCounts && Object.keys(data.kindCounts).length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-[var(--muted-foreground)] font-medium">
+            Syslog kinds:
+          </span>
+          {Object.entries(data.kindCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([kind, count]) => {
+              const meta = EVENT_KIND_META[kind] ?? {
+                label: kind.toUpperCase(),
+                short: kind,
+                color: "#71717a",
+              };
+              return (
+                <span
+                  key={kind}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded border font-mono font-semibold"
+                  style={{
+                    backgroundColor: `${meta.color}1a`,
+                    borderColor: `${meta.color}40`,
+                    color: meta.color,
+                  }}
+                  title={`${count} ${kind} event${count === 1 ? "" : "s"} in this window`}
+                >
+                  {meta.short} ×{count}
+                </span>
+              );
+            })}
+          {data.authCount !== undefined && data.authCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded border font-mono font-semibold bg-violet-500/15 border-violet-500/40 text-violet-300"
+              title={`${data.authCount} event${data.authCount === 1 ? "" : "s"} flagged as auth/security-relevant by SyslogParser`}
+            >
+              ★ {data.authCount} AUTH
+            </span>
+          )}
+        </div>
+      )}
+
       {/* ── Filters + Search ─────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[180px]">
@@ -433,6 +604,34 @@ export function ServerEventsContent({
           paramName="status"
           currentParams={currentParams}
         />
+        {/* ── 2026-06-22: USER / AGENT / PORT dropdowns ──────────────── */}
+        {data.userOptions && data.userOptions.length > 0 && (
+          <FilterDropdown
+            label="User"
+            value={data.userFilter ?? ""}
+            options={[{ value: "", label: "All users", shortLabel: "All" }, ...data.userOptions]}
+            paramName="user"
+            currentParams={currentParams}
+          />
+        )}
+        {data.agentOptions && data.agentOptions.length > 0 && (
+          <FilterDropdown
+            label="Agent"
+            value={data.agentFilter ?? ""}
+            options={[{ value: "", label: "All agents", shortLabel: "All" }, ...data.agentOptions]}
+            paramName="agent"
+            currentParams={currentParams}
+          />
+        )}
+        {data.portOptions && data.portOptions.length > 0 && (
+          <FilterDropdown
+            label="Port"
+            value={data.portFilter ?? ""}
+            options={[{ value: "", label: "All ports", shortLabel: "All" }, ...data.portOptions]}
+            paramName="port"
+            currentParams={currentParams}
+          />
+        )}
         {/* ── Hide revoked toggle ───────────────────────────────────── */}
         <button
           type="button"
@@ -603,19 +802,35 @@ export function ServerEventsContent({
                     const svcMeta = service ? SERVICE_META[service] : null;
                     const SvcIcon = svcMeta?.icon;
                     const port = getEventPort(e.rawData);
+                    const eventKind = getEventKind(e.rawData);
                     return (
                       <tr
                         key={e.id}
                         className="border-b border-[var(--border)] last:border-0 hover:bg-white/[0.02] transition-colors divide-x divide-[var(--border)]"
                       >
                         <Td>
-                          <span
-                            className="inline-flex items-center gap-1.5 text-xs font-medium"
-                            style={{ color: statusMeta.color }}
-                          >
-                            <StatusIcon className="h-3.5 w-3.5" />
-                            {statusMeta.label}
-                          </span>
+                          <div className="flex flex-col gap-1 items-start">
+                            <span
+                              className="inline-flex items-center gap-1.5 text-xs font-medium"
+                              style={{ color: statusMeta.color }}
+                            >
+                              <StatusIcon className="h-3.5 w-3.5" />
+                              {statusMeta.label}
+                            </span>
+                            {eventKind && eventKind.kind !== "syslog.line" && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border"
+                                style={{
+                                  backgroundColor: `${eventKind.meta.color}1a`,
+                                  borderColor: `${eventKind.meta.color}40`,
+                                  color: eventKind.meta.color,
+                                }}
+                                title={`Syslog event kind: ${eventKind.kind}${eventKind.authDetected ? " (auth pattern detected)" : ""}`}
+                              >
+                                {eventKind.meta.short}
+                              </span>
+                            )}
+                          </div>
                         </Td>
                         <Td>
                           <span className="inline-flex items-center gap-1.5 text-xs font-mono text-[var(--muted-foreground)] whitespace-nowrap justify-center">
@@ -676,7 +891,14 @@ export function ServerEventsContent({
                         </Td>
                         <Td>
                           <div className="font-medium text-zinc-100 whitespace-nowrap">
-                            {e.agent.name}
+                            {/* Fallback chain handles 3 cases:
+                                1. agent relation (SSR page data): e.agent = { name }
+                                2. API route (live): e.agent = "host_name" (string) OR e.agentName = "host_name"
+                                3. Both missing (old data): <Dash />
+                            */}
+                            {typeof e.agent === "string"
+                              ? e.agent
+                              : e.agent?.name ?? e.agentName ?? <Dash />}
                           </div>
                         </Td>
                         <Td className="text-left">
@@ -708,6 +930,28 @@ export function ServerEventsContent({
                             </span>
                           ) : (
                             <Dash />
+                          )}
+                          {eventKind?.authDetected && (
+                            <span
+                              className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-violet-500/15 border border-violet-500/40 text-violet-300"
+                              title={`SyslogParser detected auth/security pattern: ${eventKind.kind}`}
+                            >
+                              ★ AUTH
+                            </span>
+                          )}
+                          {/* 2026-06-22: Category badge (syslog.* events only) */}
+                          {e.category && e.category !== "auth" && e.category !== "system" && (
+                            <span
+                              className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border"
+                              style={{
+                                backgroundColor: `${categoryColor(e.category)}15`,
+                                borderColor: `${categoryColor(e.category)}60`,
+                                color: categoryColor(e.category),
+                              }}
+                              title={`Event category: ${e.category}`}
+                            >
+                              {categoryEmoji(e.category)} {e.category.toUpperCase()}
+                            </span>
                           )}
                         </Td>
                         <Td>

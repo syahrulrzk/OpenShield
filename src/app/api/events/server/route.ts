@@ -113,11 +113,56 @@ export async function GET(req: NextRequest) {
   // event from the same session. Hiding them by default cuts noise ~3×.
   // Opt-in via ?showConnection=1 to see all connection metadata.
   const showConnection = sp.get("showConnection") === "1";
+  // 2026-06-22: noise filter for syslog page — mirror the page.tsx logic.
+  // Agent already filters noise sources (systemd/dockerd/etc) so we only
+  // need a few remaining patterns as opt-out fallback. ?showNoise=1 to opt-in.
+  const showNoise = sp.get("showNoise") === "1";
+  const noisePatterns = [
+    "Heartbeat OK",
+    "Skip /var/log/",
+    "POST /api/agents/heartbeat",
+    "raw_params=", // agent edit tool debug (truncated JSON)
+    "[context-overflow-", // agent context overflow msg
+    "node[", // next.js dev mode
+  ];
   // Sub-page source scoping: e.g. /dashboard/events/syslog sets ?sourceType=syslog
   // so the API filters to only syslog sources. Unknown values fall through to
   // the full SERVER_SOURCES list (current behaviour).
   const sourceType = sp.get("sourceType") || "";
   const scopedSources = SOURCE_TYPE_MAP[sourceType];
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 2026-06-22: USER / AGENT / PORT quick filters (URL params).
+  // Distinct values are passed to the dropdown UI; the filter narrows the
+  // query when set. For syslog: user = syslog.user column; port = syslog.port.
+  // Agent filter narrows by denormalized agent_name (avoids JOIN + matches
+  // SSR page.tsx logic).
+  // ─────────────────────────────────────────────────────────────────────
+  const userFilter = sp.get("user")?.trim() || "";
+  const agentFilter = sp.get("agent")?.trim() || "";
+  const portFilter = sp.get("port")?.trim() || "";
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 2026-06-22: Category filter (auth/service/cron/network/...)
+  // Maps UI-friendly category name → set of eventType prefixes that the
+  // agent's SyslogParser emits. Applied only to syslog queries (other
+  // event types don't have categories yet).
+  // ─────────────────────────────────────────────────────────────────────
+  const category = sp.get("category") || "";
+  const CATEGORY_PREFIXES: Record<string, string[]> = {
+    auth:     ["syslog.sshd", "syslog.sudo", "syslog.su", "syslog.pam", "syslog.privilege", "syslog.session"],
+    user:     ["syslog.user_change"],
+    service:  ["syslog.service"],
+    cron:     ["syslog.cron"],
+    network:  ["syslog.network", "syslog.firewall"],
+    docker:   ["syslog.docker", "syslog.kubernetes"],
+    disk:     ["syslog.disk"],
+    hardware: ["syslog.usb", "syslog.hardware"],
+    kernel:   ["syslog.kernel"],
+    package:  ["syslog.package"],
+    system:   ["syslog.line", "syslog.malformed"],
+  };
+  const categoryPrefixes = CATEGORY_PREFIXES[category] || null;
 
   // Time window — but if the user searches by date (in `q`), use a generous
   // window instead of the user-selected `range`. Otherwise the 24h range
@@ -251,6 +296,254 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  // 2026-06-22: Dispatch to tEventLogSyslog when sourceType=syslog.
+  // The syslog table has different columns (no username/sourceIp — those
+  // live in raw_data.user/raw_data.ip). The UI consumes both via
+  // rawData so we normalize the shape here.
+  const isSyslogOnly = sourceType === "syslog";
+  if (isSyslogOnly) {
+    const andClauses2: Prisma.TEventLogSyslogWhereInput[] = [];
+    const dateRange2 = parseDateFromQuery(q);
+    if (dateRange2) andClauses2.push({ eventTime: dateRange2 });
+    const ipMatch2 = parseIpFromQuery(q);
+    if (ipMatch2) {
+      andClauses2.push({
+        OR: [
+          { hostname: { contains: ipMatch2 } },
+          { description: { contains: ipMatch2 } },
+          { sourceIp: { contains: ipMatch2 } },
+        ],
+      });
+    }
+    if (q) {
+      const stripped = q
+        .replace(/\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/g, "")
+        .replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}\b/g, "")
+        .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "")
+        .trim();
+      if (stripped) {
+        const tokens = stripped.split(/\s+/).filter((t) => t.length > 0);
+        for (const token of tokens) {
+          const fieldMatch = token.match(/^([a-zA-Z]+):(.+)$/);
+          if (fieldMatch) {
+            const [, field, value] = fieldMatch;
+            const v = value.trim();
+            if (!v) continue;
+            switch (field.toLowerCase()) {
+              case "agent":
+                andClauses2.push({
+                  OR: [
+                    { agent: { name: { contains: v, mode: "insensitive" } } },
+                    { agent: { hostname: { contains: v, mode: "insensitive" } } },
+                  ],
+                });
+                break;
+              case "user":
+                andClauses2.push({ user: { contains: v, mode: "insensitive" } });
+                break;
+              case "ip":
+                andClauses2.push({
+                  OR: [
+                    { hostname: { contains: v } },
+                    { description: { contains: v } },
+                    { sourceIp: { contains: v } },
+                  ],
+                });
+                break;
+              case "msg":
+              case "message":
+                andClauses2.push({ description: { contains: v, mode: "insensitive" } });
+                break;
+              default:
+                andClauses2.push({
+                  OR: [
+                    { description: { contains: token, mode: "insensitive" } },
+                    { source: { contains: token, mode: "insensitive" } },
+                    { process: { contains: token, mode: "insensitive" } },
+                    { hostname: { contains: token, mode: "insensitive" } },
+                  ],
+                });
+            }
+          } else {
+            andClauses2.push({
+              OR: [
+                { description: { contains: token, mode: "insensitive" } },
+                { source: { contains: token, mode: "insensitive" } },
+                { process: { contains: token, mode: "insensitive" } },
+                { hostname: { contains: token, mode: "insensitive" } },
+              ],
+            });
+          }
+        }
+      }
+    }
+
+    const baseWhere2: Prisma.TEventLogSyslogWhereInput = {
+      eventTime: { gte: since },
+      source: { in: [...SYSLOG_SOURCES] },
+      ...(hideRevoked ? { agent: { revokedAt: null } } : {}),
+      ...(!showNoise
+        ? {
+            NOT: noisePatterns.map((p) => ({
+              description: { contains: p },
+            })) as Prisma.TEventLogSyslogWhereInput[],
+          }
+        : {}),
+      // 2026-06-22: category filter (eventType prefix match via OR chain)
+      ...(categoryPrefixes
+        ? { eventType: { in: categoryPrefixes } }
+        : {}),
+      // 2026-06-22: USER / AGENT / PORT quick filters (URL params).
+      // When set, narrow the base query before AND search clauses run.
+      ...(userFilter ? { user: { equals: userFilter } } : {}),
+      ...(agentFilter ? { agentName: { equals: agentFilter } } : {}),
+      ...(portFilter ? { port: { equals: parseInt(portFilter, 10) } } : {}),
+    };
+    const where2: Prisma.TEventLogSyslogWhereInput = {
+      ...baseWhere2,
+      ...(andClauses2.length > 0 ? { AND: andClauses2 } : {}),
+    };
+
+    const [rawEvents2, total2] = await Promise.all([
+      // 2026-06-22: keep query to base table (Prisma where) for safety +
+      // structured filters. Post-process rows to match the flat view shape:
+      //   id, timestamp, agent, event_type, severity, user, source_ip, description
+      prisma.tEventLogSyslog.findMany({
+        where: where2,
+        orderBy: { eventTime: "desc" },
+        take: 500,
+        select: {
+          id: true,
+          eventTime: true,
+          eventType: true,
+          severity: true,
+          user: true,
+          sourceIp: true,
+          description: true,
+          source: true,
+          process: true,
+          hostname: true,
+          agentName: true,
+          authDetected: true,
+          facility: true,
+          priority: true,
+          service: true,
+          port: true,
+          count: true,
+        },
+      }),
+      prisma.tEventLogSyslog.count({ where: baseWhere2 }),
+    ]);
+
+    // 2026-06-22: rows from prisma.tEventLogSyslog already have flat typed
+    // columns (after the 20260622081000 flatten migration). Map them to
+    // the example shape Bos wants:
+    //   id, timestamp, agent, event_type, severity, user, source_ip, description
+    // Also synthesize a legacy `message` field so the UI helpers
+    // (getEventStatus, getEventIp, getEventUser, etc.) keep working.
+    const eventsWithStatus2 = rawEvents2.map((e) => {
+      const eventKind = e.eventType || "log.line";
+      const eventTimeIso = e.eventTime.toISOString();
+      return {
+        // FLAT COLUMNS — matches Bos's example
+        id: e.id,
+        timestamp: eventTimeIso.slice(0, 19).replace("T", " "),
+        agent: e.agentName,
+        agent_name: e.agentName,
+        event_type: eventKind,
+        severity: e.severity,
+        user: e.user,
+        source_ip: e.sourceIp,
+        description: e.description,
+        // Legacy / UI helper fields
+        source: e.source,
+        process: e.process,
+        hostname: e.hostname,
+        message: e.description,        // alias for UI
+        eventTime: e.eventTime,
+        auth_detected: e.authDetected,
+        facility: e.facility,
+        priority: e.priority,
+        service: e.service,
+        port: e.port,
+        count: e.count,
+        // Synthesize rawData for the UI's getEventKind/getEventIp helpers
+        // that still read from rawData.eventKind / rawData.user / rawData.ip.
+        // No actual jsonb storage anymore — this is just an in-memory shape
+        // contract.
+        rawData: {
+          eventKind,
+          user: e.user,
+          ip: e.sourceIp,
+          authDetected: e.authDetected,
+          port: e.port,
+          service: e.service,
+          process: e.process,
+        },
+        status: getEventStatus(e.severity, e.description),
+      };
+    });
+
+    const statusCounts2: Record<EventStatus, number> = {
+      SUCCESS: 0,
+      FAILED: 0,
+      DENIED: 0,
+    };
+    const kindCounts2: Record<string, number> = {};
+    let authCount2 = 0;
+    // 2026-06-22: collect top values for USER / AGENT / PORT dropdowns.
+    // Build from the raw events (pre-status-filter, post-base-filter) so
+    // the options reflect what would be available if user clears status.
+    const userCounts2: Record<string, number> = {};
+    const agentCounts2: Record<string, number> = {};
+    const portCounts2: Record<string, number> = {};
+    for (const e of eventsWithStatus2) {
+      statusCounts2[e.status]++;
+      if (e.event_type && e.event_type.startsWith("syslog.")) {
+        kindCounts2[e.event_type] = (kindCounts2[e.event_type] ?? 0) + 1;
+      }
+      if (e.auth_detected === true) authCount2++;
+      if (e.user) userCounts2[e.user] = (userCounts2[e.user] ?? 0) + 1;
+      const agentLabel = typeof e.agent === "string" ? e.agent : e.agent_name;
+      if (agentLabel) agentCounts2[agentLabel] = (agentCounts2[agentLabel] ?? 0) + 1;
+      if (e.port !== null && e.port !== undefined) {
+        portCounts2[String(e.port)] = (portCounts2[String(e.port)] ?? 0) + 1;
+      }
+    }
+    const topN = (counts: Record<string, number>, n: number) =>
+      Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, n)
+        .map(([value, count]) => ({ value, label: value, count }));
+
+    const filtered2 = statusFilter
+      ? eventsWithStatus2.filter((e) => e.status === statusFilter)
+      : eventsWithStatus2;
+    const events2 = filtered2.slice(0, 100);
+
+    return NextResponse.json({
+      events: events2,
+      total: total2,
+      displayed: events2.length,
+      filteredTotal: filtered2.length,
+      statusCounts: statusCounts2,
+      statusFilter: statusFilter ?? "all",
+      range,
+      q,
+      hideRevoked,
+      showConnection,
+      kindCounts: kindCounts2,
+      authCount: authCount2,
+      // 2026-06-22: dropdown filter options + currently-applied value
+      userOptions: topN(userCounts2, 15),
+      agentOptions: topN(agentCounts2, 10),
+      portOptions: topN(portCounts2, 10),
+      userFilter: userFilter || undefined,
+      agentFilter: agentFilter || undefined,
+      portFilter: portFilter || undefined,
+    });
+  }
+
   const [rawEvents, total] = await Promise.all([
     prisma.tEventLogServerAuth.findMany({
       where,
@@ -313,9 +606,11 @@ export async function GET(req: NextRequest) {
         // common variants (SSHD/OPENSSH → "SSH") so the user always sees
         // a consistent label. SERVICE_META lookup is case-sensitive so
         // we keep the canonical UPPERCASE form here.
-        service: typeof e.service === "string" && e.service.length > 0
-          ? e.service.toUpperCase()
-          : null,
+        service: e.groupService ?? (
+          typeof e.service === "string" && e.service.length > 0
+            ? e.service.toUpperCase()
+            : null
+        ),
         port: clientPort,
         serverPort: clientPort !== null ? 22 : null,
         // Session grouping metadata: how many events were merged and which
@@ -336,8 +631,18 @@ export async function GET(req: NextRequest) {
     FAILED: 0,
     DENIED: 0,
   };
+  // 2026-06-22: Count syslog eventKind breakdown + auth events.
+  // SyslogParser sets raw_data.eventKind + raw_data.authDetected.
+  const kindCounts: Record<string, number> = {};
+  let authCount = 0;
   for (const e of eventsWithStatus) {
     statusCounts[e.status]++;
+    const rd = (e.rawData ?? {}) as Record<string, unknown>;
+    const k = typeof rd.eventKind === "string" ? rd.eventKind : null;
+    if (k && k.startsWith("syslog.")) {
+      kindCounts[k] = (kindCounts[k] ?? 0) + 1;
+    }
+    if (rd.authDetected === true) authCount++;
   }
 
   const filtered = statusFilter
@@ -356,5 +661,7 @@ export async function GET(req: NextRequest) {
     q,
     hideRevoked,
     showConnection,
+    kindCounts,
+    authCount,
   });
 }
