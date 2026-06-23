@@ -41,8 +41,8 @@ import { pollDatabase } from "@/lib/poller/db";
 const createSchema = z
   .object({
     displayName: z.string().trim().min(1).max(64),
-    environment: z.enum(["PROD", "STAGING", "UAT"]),
-    category: z.enum(["SSH", "DATABASE"]),
+    environment: z.enum(["PROD", "STAGING", "UAT", "DEV", "DR"]),
+    category: z.enum(["SSH", "DATABASE", "NETWORK", "APP"]),
     // Database-specific
     dbType: z.enum(["POSTGRES", "MYSQL", "SQLSERVER"]).optional(),
     dbHost: z.string().trim().min(1).max(255).optional(),
@@ -65,6 +65,18 @@ const createSchema = z
     description: z.string().trim().max(512).optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(),
     testConnection: z.boolean().optional().default(true),
+    // Network device fields (only used when category = NETWORK)
+    vendor: z.string().trim().max(64).optional(),
+    model: z.string().trim().max(128).optional(),
+    firmware: z.string().trim().max(128).optional(),
+    mgmtIp: z.string().trim().max(64).optional(),
+    syslogPort: z.number().int().min(1).max(65535).optional().default(514),
+    sshEnabled: z.boolean().optional().default(false),
+    // App fields (only used when category = APP) — webhook ingest target
+    appType: z.enum(["web", "saas", "internal", "api", "mobile", "cli"]).optional(),
+    authMethod: z.enum(["oauth", "session", "jwt", "api_key", "password", "saml", "ldap"]).optional(),
+    ownerTeam: z.string().trim().max(64).optional(),
+    webhookUrl: z.string().trim().max(512).optional(),
   })
   .refine(
     (d) => {
@@ -79,11 +91,15 @@ const createSchema = z
           !!d.password
         );
       }
+      // NETWORK requires vendor and mgmtIp (for anti-spoof)
+      if (d.category === "NETWORK") {
+        return !!d.vendor;
+      }
       return true;
     },
     {
       message:
-        "DATABASE assets require: dbType, dbHost, dbPort, dbName, dbUser, password",
+        "DATABASE assets require: dbType, dbHost, dbPort, dbName, dbUser, password. NETWORK assets require: vendor.",
     }
   );
 
@@ -235,6 +251,18 @@ export async function POST(req: NextRequest) {
           data.auditConnectionLog
             ? true
             : false,
+        // Network device fields (only when category = NETWORK)
+        vendor: data.category === "NETWORK" ? (data.vendor ?? "generic") : null,
+        model: data.category === "NETWORK" ? (data.model ?? null) : null,
+        firmware: data.category === "NETWORK" ? (data.firmware ?? null) : null,
+        mgmtIp: data.category === "NETWORK" ? (data.mgmtIp ?? null) : null,
+        syslogPort: data.category === "NETWORK" ? (data.syslogPort ?? 514) : 514,
+        sshEnabled: data.category === "NETWORK" ? (data.sshEnabled ?? false) : false,
+        // App fields (only when category = APP) — webhook ingest target
+        appType: data.category === "APP" ? (data.appType ?? "web") : null,
+        authMethod: data.category === "APP" ? (data.authMethod ?? "api_key") : null,
+        ownerTeam: data.category === "APP" ? (data.ownerTeam ?? null) : null,
+        webhookUrl: data.category === "APP" ? (data.webhookUrl ?? null) : null,
         // Start as PENDING — poller will set ONLINE after first successful poll
         status: "PENDING",
         ...(dbEncData

@@ -94,55 +94,76 @@ export async function DELETE(req: NextRequest) {
     }
   }
 
-  // 3. Build where clause — applies to all 6 per-type tables (2026-06-21 refactor).
-  // The "source" field is present on t_event_log_syslog + t_event_log_fim.
-  // For tables that don't have "source" (server_auth, apps, auditd, database),
-  // bySource filters on alternative identity fields.
-  const syslogWhere =
-    mode === "olderThan"
-      ? { eventTime: { lt: subDays(new Date(), days!) } }
-      : mode === "bySource"
-      ? { source: { in: sources! } }
-      : {};
-  const fimWhere = { ...syslogWhere }; // fim has source too
-  // Server-auth: filter on (sourceIp + username + status for visibility)
-  const serverAuthWhere =
-    mode === "olderThan"
-      ? { eventTime: { lt: subDays(new Date(), days!) } }
-      : mode === "bySource"
-      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }] }
-      : {};
-  const appsWhere =
-    mode === "olderThan"
-      ? { eventTime: { lt: subDays(new Date(), days!) } }
-      : mode === "bySource"
-      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { appName: { in: sources! } }] }
-      : {};
-  const auditdWhere =
-    mode === "olderThan"
-      ? { eventTime: { lt: subDays(new Date(), days!) } }
-      : mode === "bySource"
-      ? { process: { in: sources! } }
-      : {};
-  const databaseWhere =
-    mode === "olderThan"
-      ? { eventTime: { lt: subDays(new Date(), days!) } }
-      : mode === "bySource"
-      ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { database: { in: sources! } }] }
-      : {};
+  // 3. Build where clause — applies to all per-type tables.
+  // Each table has its own field-mapping for bySource mode.
+  const olderThanWhere = { eventTime: { lt: subDays(new Date(), days!) } };
 
-  // 4. Count before (across all 6 tables) + sample
-  const [syslogCount, serverAuthCount, fimCount, appsCount, auditdCount, databaseCount] =
-    await Promise.all([
-      prisma.tEventLogSyslog.count({ where: syslogWhere }),
-      prisma.tEventLogServerAuth.count({ where: serverAuthWhere }),
-      prisma.tEventLogFim.count({ where: fimWhere }),
-      prisma.tEventLogApps.count({ where: appsWhere }),
-      prisma.tEventLogAuditd.count({ where: auditdWhere }),
-      prisma.tEventLogDatabase.count({ where: databaseWhere }),
-    ]);
-  const beforeCount =
-    syslogCount + serverAuthCount + fimCount + appsCount + auditdCount + databaseCount;
+  type CountWhere = Record<string, unknown>;
+  type TableSpec = {
+    name: string;
+    count: (args: { where: CountWhere }) => Promise<number>;
+    delete: (args: { where: CountWhere }) => Promise<{ count: number }>;
+  };
+
+  const tables: TableSpec[] = [
+    {
+      name: "syslog",
+      count: (args) => prisma.tEventLogSyslog.count(args as any),
+      delete: (args) => prisma.tEventLogSyslog.deleteMany(args as any),
+    },
+    {
+      name: "fim",
+      count: (args) => prisma.tEventLogFim.count(args as any),
+      delete: (args) => prisma.tEventLogFim.deleteMany(args as any),
+    },
+    {
+      name: "server_auth",
+      count: (args) => prisma.tEventLogServerAuth.count(args as any),
+      delete: (args) => prisma.tEventLogServerAuth.deleteMany(args as any),
+    },
+    {
+      name: "agent_apps",
+      count: (args) => prisma.tEventLogAgentApps.count(args as any),
+      delete: (args) => prisma.tEventLogAgentApps.deleteMany(args as any),
+    },
+    {
+      name: "auditd",
+      count: (args) => prisma.tEventLogAuditd.count(args as any),
+      delete: (args) => prisma.tEventLogAuditd.deleteMany(args as any),
+    },
+    {
+      name: "database",
+      count: (args) => prisma.tEventLogDatabase.count(args as any),
+      delete: (args) => prisma.tEventLogDatabase.deleteMany(args as any),
+    },
+    {
+      name: "network",
+      count: (args) => prisma.tEventLogNetwork.count(args as any),
+      delete: (args) => prisma.tEventLogNetwork.deleteMany(args as any),
+    },
+    {
+      name: "user_access",
+      count: (args) => prisma.tEventLogUserAccess.count(args as any),
+      delete: (args) => prisma.tEventLogUserAccess.deleteMany(args as any),
+    },
+  ];
+
+  const whereMap: Record<string, CountWhere> = {
+    syslog: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { source: { in: sources! } } : {},
+    fim: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { source: { in: sources! } } : {},
+    server_auth: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }] } : {},
+    agent_apps: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { appName: { in: sources! } }] } : {},
+    auditd: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { process: { in: sources! } } : {},
+    database: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { OR: [{ sourceIp: { in: sources! } }, { username: { in: sources! } }, { database: { in: sources! } }] } : {},
+    network: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { OR: [{ srcIp: { in: sources! } }, { hostname: { in: sources! } }, { vendor: { in: sources! } }] } : {},
+    user_access: mode === "olderThan" ? olderThanWhere : mode === "bySource" ? { OR: [{ actorEmail: { in: sources! } }, { actorUsername: { in: sources! } }, { actorIp: { in: sources! } }] } : {},
+  };
+
+  // 4. Count before (across all tables) — parallel
+  const counts = await Promise.all(
+    tables.map((t) => t.count({ where: whereMap[t.name] ?? {} }))
+  );
+  const beforeCount: number = counts.reduce((a, b) => a + b, 0);
 
   if (beforeCount === 0) {
     return NextResponse.json({
@@ -153,30 +174,19 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
-  // 5. Sample some IDs for audit (capped at 20) — pull from syslog first
-  //    (most events land here). Same audit metadata format as before.
+  // 5. Sample some IDs for audit (capped at 20) — pull from syslog first.
   const sample = await prisma.tEventLogSyslog.findMany({
-    where: syslogWhere,
+    where: whereMap.syslog as any,
     select: { id: true, severity: true, eventTime: true, source: true },
     orderBy: { eventTime: "desc" },
     take: 20,
   });
 
-  // 6. Hard delete across all 6 tables (parallel for speed)
-  const [syslogDel, serverAuthDel, fimDel, appsDel, auditdDel, databaseDel] =
-    await Promise.all([
-      prisma.tEventLogSyslog.deleteMany({ where: syslogWhere }),
-      prisma.tEventLogServerAuth.deleteMany({ where: serverAuthWhere }),
-      prisma.tEventLogFim.deleteMany({ where: fimWhere }),
-      prisma.tEventLogApps.deleteMany({ where: appsWhere }),
-      prisma.tEventLogAuditd.deleteMany({ where: auditdWhere }),
-      prisma.tEventLogDatabase.deleteMany({ where: databaseWhere }),
-    ]);
-  const deleteResult = {
-    count:
-      syslogDel.count + serverAuthDel.count + fimDel.count +
-      appsDel.count + auditdDel.count + databaseDel.count,
-  };
+  // 6. Hard delete across all tables (parallel for speed)
+  const deletes = await Promise.all(
+    tables.map((t) => t.delete({ where: whereMap[t.name] ?? {} }))
+  );
+  const rowsDeleted: number = deletes.reduce((a, d) => a + d.count, 0);
 
   // 7. Verify after count (should all be 0 for matching filter)
   const afterCount = 0; // filtered delete = matches removed
@@ -192,7 +202,7 @@ export async function DELETE(req: NextRequest) {
       mode,
       days: mode === "olderThan" ? days : undefined,
       sources: mode === "bySource" ? sources : undefined,
-      rowsDeleted: deleteResult.count,
+      rowsDeleted,
       beforeCount,
       afterCount,
       sample: sample.map((s) => ({
@@ -206,12 +216,12 @@ export async function DELETE(req: NextRequest) {
   });
 
   return NextResponse.json({
-    rowsDeleted: deleteResult.count,
+    rowsDeleted,
     beforeCount,
     afterCount,
     mode,
     days: mode === "olderThan" ? days : undefined,
     sources: mode === "bySource" ? sources : undefined,
-    message: `Successfully deleted ${deleteResult.count} events`,
+    message: `Successfully deleted ${rowsDeleted} events`,
   });
 }

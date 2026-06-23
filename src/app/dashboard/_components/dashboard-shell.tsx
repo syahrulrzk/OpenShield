@@ -25,6 +25,9 @@ import {
   Trash2,
   Eye,
   FileLock,
+  Network as NetworkIcon,
+  Router,
+  Server,
 } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
 import { PulseDot } from "@/components/animations";
@@ -71,6 +74,11 @@ const navGroups: NavGroup[] = [
         label: "Agent Endpoint",
         icon: Cpu,
         requiresRole: ["OWNER", "ADMIN"] as const,
+        children: [
+          { href: "/dashboard/agents", label: "Servers", icon: Server },
+          { href: "/dashboard/network", label: "Network", icon: Router },
+          { href: "/dashboard/database", label: "Database", icon: Database },
+        ],
       },
       {
         href: "/dashboard/events",
@@ -80,11 +88,9 @@ const navGroups: NavGroup[] = [
           { href: "/dashboard/server", label: "Server Auth", icon: Terminal },
           { href: "/dashboard/database", label: "Database", icon: Database },
           {
-            href: "/dashboard/apps",
-            label: "Apps",
-            icon: AppWindow,
-            locked: true,
-            badge: "Soon",
+            href: "/dashboard/events/network",
+            label: "Network",
+            icon: NetworkIcon,
           },
           {
             href: "/dashboard/events/syslog",

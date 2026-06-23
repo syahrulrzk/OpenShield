@@ -26,8 +26,10 @@ const TABLES = [
   { model: "tEventLogFim", label: "fim", key: SETTING_LOW },
   { model: "tEventLogAuditd", label: "auditd", key: SETTING_LOW },
   { model: "tEventLogServerAuth", label: "server_auth", key: SETTING_HIGH },
-  { model: "tEventLogApps", label: "apps", key: SETTING_HIGH },
+  { model: "tEventLogAgentApps", label: "agent_apps", key: SETTING_HIGH },
   { model: "tEventLogDatabase", label: "database", key: SETTING_HIGH },
+  { model: "tEventLogNetwork", label: "network", key: SETTING_HIGH },
+  { model: "tEventLogUserAccess", label: "user_access", key: SETTING_HIGH },
 ] as const;
 
 export const dynamic = "force-dynamic";

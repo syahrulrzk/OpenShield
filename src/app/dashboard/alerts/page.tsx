@@ -82,7 +82,7 @@ export default async function AlertsPage() {
           agent: { select: { name: true, hostname: true } },
         },
       }),
-      prisma.tEventLogApps.findMany({
+      prisma.tEventLogAgentApps.findMany({
         where: { severity: { in: ["ERROR", "CRITICAL"] } },
         orderBy: { eventTime: "desc" },
         take: 20,

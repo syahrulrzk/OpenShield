@@ -25,6 +25,8 @@ const PUBLIC_PATHS = [
   "/api/poller/run",
   "/api/agents/register",
   "/api/agents/heartbeat",
+  // Public webhook endpoints — protected by API key at handler level (not session)
+  "/api/ingest/apps",
   // Quick install — URL itself is the bearer (agent_id + token)
   "/api/install",
   "/_next",

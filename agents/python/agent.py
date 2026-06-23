@@ -72,6 +72,21 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
+# Network syslog receiver (UDP/514) — vendored module sitting next to agent.py
+# in /opt/openshield-agent/. Imports are lazy so the receiver is only loaded
+# when `syslog_listen.enabled=true` is in the config (default OFF).
+try:
+    import network_syslog as _network_syslog  # type: ignore
+    HAS_NETWORK_SYSLOG = True
+except ImportError:
+    _network_syslog = None  # type: ignore
+    HAS_NETWORK_SYSLOG = False
+
+try:
+    import threading  # noqa: F401  # used by NetworkSyslogReceiver
+except ImportError:
+    pass
+
 VERSION = "1.6.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
@@ -1227,6 +1242,19 @@ class SyslogParser:
         (re.compile(r'\b(?:install|remove|purge|configure|upgrade|downgrade)\s+[a-z][\w.+-]+\s+(?:[\d.:+~a-z-]+)?\s*$', re.IGNORECASE), 'syslog.package.install', 'INFO'),
     )
 
+    # 🚀 Boot / shutdown / reboot events (systemd, kernel)
+    # High-signal lifecycle events that mark host restarts.
+    BOOT_PATTERNS = (
+        # systemd: "Startup finished in 1.2s." / "Boot finished at 12345."
+        (re.compile(r'\b(?:Startup finished|Boot finished|Startup of \d+ took|Reached target (?:Multi-User|System|Graphical|Network|Local File Systems)|Reached (?:login|graphical) target)\b', re.IGNORECASE), 'syslog.boot.started', 'INFO'),
+        # systemd: "System Initialization started." / "Started Initial Setup."
+        (re.compile(r'\bSystem (?:Initialization|Shutdown|Reboot)\b', re.IGNORECASE), 'syslog.boot.lifecycle', 'WARN'),
+        # kernel: "Linux version ... starting" / "Command line: BOOT_IMAGE=..."
+        (re.compile(r'\b(?:Linux version|Command line:|Kernel command line:|Run /sbin/init as init process|Kernel started|scanning \d+ directories)', re.IGNORECASE), 'syslog.boot.kernel', 'INFO'),
+        # shutdown: "Shutting down." / "Reached target Shutdown." / "Powering off."
+        (re.compile(r'\b(?:Shutting down|Powering off|Halting system|Reached target (?:Shutdown|PowerOff)|System halted|Going down for|systemd-shutdown)', re.IGNORECASE), 'syslog.boot.shutdown', 'WARN'),
+    )
+
     # ─────────────────────────────────────────────────────────────────────
     # Category mapping: eventType prefix → UI category
     # Used by UI/API to group events in the dashboard.
@@ -1250,6 +1278,7 @@ class SyslogParser:
         'syslog.kernel': 'kernel',
         'syslog.hardware': 'hardware',
         'syslog.package': 'package',
+        'syslog.boot': 'system',
         'syslog.line': 'system',
         'syslog.malformed': 'system',
     }
@@ -1279,8 +1308,32 @@ class SyslogParser:
         4: 'warning', 5: 'notice', 6: 'info', 7: 'debug',
     }
 
+    BRUTE_FORCE_WINDOW_S = 60
+    BRUTE_FORCE_THRESHOLD = 5
+
     def __init__(self, source_path: str = '/var/log/syslog'):
         self.source_path = source_path
+        # IP → deque of monotonic timestamps (seconds since epoch) for
+        # the BRUTE_FORCE_WINDOW_S rolling window.
+        import collections as _collections
+        self._ssh_failures: Dict[str, _collections.deque] = {}
+
+    def _record_ssh_failure(self, ip: str, ts: float) -> int:
+        """
+        Record one sshd failed auth attempt for `ip` at `ts` (seconds).
+        Returns the current count of failures for `ip` within the window.
+        Auto-prunes entries older than BRUTE_FORCE_WINDOW_S.
+        """
+        import collections as _collections
+        dq = self._ssh_failures.get(ip)
+        if dq is None:
+            dq = _collections.deque()
+            self._ssh_failures[ip] = dq
+        dq.append(ts)
+        cutoff = ts - self.BRUTE_FORCE_WINDOW_S
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        return len(dq)
 
     def parse(self, line: str) -> Optional[Dict[str, Any]]:
         line = line.rstrip('\n')
@@ -1379,7 +1432,7 @@ class SyslogParser:
         for patterns_tuple in (self.KERNEL_PATTERNS, self.DISK_PATTERNS,
                                 self.SERVICE_PATTERNS, self.CRON_PATTERNS,
                                 self.NETWORK_PATTERNS, self.PACKAGE_PATTERNS,
-                                self.DOCKER_PATTERNS):
+                                self.DOCKER_PATTERNS, self.BOOT_PATTERNS):
             for pattern, ev_type, ev_sev in patterns_tuple:
                 if pattern.search(msg):
                     category_event_type = ev_type
@@ -1409,7 +1462,13 @@ class SyslogParser:
 
         pid_int = int(pid) if pid and pid.isdigit() else None
 
-        return self._make_event(
+        # Extract user/IP once — used for both the main event AND the
+        # brute-force correlation check below.
+        user_ip = self._match_user_ip(msg, event_type or 'syslog.line')
+        user_str = user_ip.get("user")
+        ip_str = user_ip.get("ip")
+
+        main_event = self._make_event(
             severity=severity,
             event_type=event_type,
             source_app=app,
@@ -1437,7 +1496,7 @@ class SyslogParser:
                 # wants (id, timestamp, agent, event_type, severity,
                 # user, source_ip, description). Without this the view
                 # would always show user=- and source_ip=-.
-                **self._match_user_ip(msg, event_type or 'syslog.line'),
+                **user_ip,
                 # 2026-06-22: extract systemd unit name for service.* events
                 # so server event-log-router can dedup a flapping service
                 # (e.g. monitoring-agent restart-loop producing 30 events/min)
@@ -1445,6 +1504,85 @@ class SyslogParser:
                 **({"service": unit} if (unit := self._extract_service_unit(msg)) else {}),
             },
         )
+
+        # ── Brute force correlation ───────────────────────────────────
+        # 2026-06-22: when a syslog.sshd ERROR event has a parsed source IP
+        # AND the message is a failure (Failed password / Invalid user),
+        # record it. If we hit BRUTE_FORCE_THRESHOLD (5) failures within
+        # BRUTE_FORCE_WINDOW_S (60s), emit an ADDITIONAL syslog.bruteforce
+        # ERROR event so the dashboard / alerts page can surface the
+        # attack pattern (one row instead of 5 identical rows).
+        #
+        # The event type is kept as syslog.bruteforce (NOT syslog.sshd)
+        # so server event-log-router can route it to its own bucket and
+        # a future severity filter / alert can target it specifically.
+        extra_events = []
+        if (
+            event_type == 'syslog.sshd'
+            and severity == 'ERROR'
+            and ip_str
+            and re.search(r'\b(?:Failed password|Invalid user)\b', msg, re.IGNORECASE)
+        ):
+            # 2026-06-22: use agent wall clock for correlation window.
+            # syslog timestamp parsing adds complexity for marginal gain
+            # (window is 60s, syslog→agent lag is sub-second).
+            import time as _time
+            ts = _time.time()
+            count = self._record_ssh_failure(ip_str, ts)
+            if count >= self.BRUTE_FORCE_THRESHOLD:
+                # Only fire the alert once per WINDOW — check if we already
+                # fired for this IP within the window.
+                last_alert = getattr(self, '_ssh_last_alert', {}).get(ip_str)
+                if not last_alert or (ts - last_alert) >= self.BRUTE_FORCE_WINDOW_S:
+                    if not hasattr(self, '_ssh_last_alert'):
+                        self._ssh_last_alert = {}
+                    self._ssh_last_alert[ip_str] = ts
+                    extra_events.append(
+                        self._make_event(
+                            severity='ERROR',
+                            event_type='syslog.bruteforce',
+                            source_app=app,
+                            pid=pid_int,
+                            message=(
+                                f"Brute force suspected: {count} failed sshd attempts "
+                                f"from {ip_str} in last {self.BRUTE_FORCE_WINDOW_S}s"
+                            )[:500],
+                            raw={
+                                'parser': 'syslog',
+                                'format': line_format,
+                                'priority': pri,
+                                'facility': facility,
+                                'severityNum': severity_num,
+                                'severityName': self.SEVERITY_NAMES.get(severity_num) if severity_num is not None else None,
+                                'sourceApp': app,
+                                'pid': pid_int,
+                                'eventKind': 'syslog.bruteforce',
+                                'authDetected': True,
+                                'process': app,
+                                'user': user_str,
+                                'sourceIp': ip_str,
+                                'bruteForceCount': count,
+                                'windowSeconds': self.BRUTE_FORCE_WINDOW_S,
+                            },
+                        )
+                    )
+
+        if extra_events:
+            return [main_event] + extra_events
+        return main_event
+
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            if isinstance(parsed_ts, _dt):
+                if parsed_ts.tzinfo is None:
+                    parsed_ts = parsed_ts.replace(tzinfo=_tz.utc)
+                return parsed_ts.timestamp()
+            if isinstance(parsed_ts, str):
+                # ISO 8601 fallback — best effort.
+                return _dt.fromisoformat(parsed_ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+        return None
 
 
     @staticmethod
@@ -1505,10 +1643,12 @@ class SyslogParser:
         return None
 
     def _make_event(self, severity, event_type, source_app, pid, message, raw):
-        # 2026-06-22: also include category in raw_data so UI can group/filter
-        # without re-deriving on every render. Source of truth = eventType prefix.
+        # 2026-06-22: fix hardcoded 'log.line' event_type bug — was always
+        # overriding the caller-provided event_type (sshd, sudo, service.failed,
+        # brute force, etc). Now respects the param. category is still
+        # derived from event_type prefix for UI grouping.
         return {
-            'event_type': 'log.line',
+            'event_type': event_type,
             'severity': severity,
             'source': self.source_path,
             'message': message,
@@ -1876,13 +2016,21 @@ class LogTailer:
                 if len(line) > self.MAX_LINE_BYTES:
                     continue
                 try:
-                    ev = parser.parse(line)
+                    # 2026-06-22: parser.parse may return a LIST of events
+                    # (e.g. SyslogParser emits an extra syslog.bruteforce
+                    # alert when SSH failure threshold is reached).
+                    ev_or_list = parser.parse(line)
                 except Exception as e:
                     self.log.debug(f"{path}: parser exception: {e}")
-                    ev = None
-                if ev:
-                    events.append(ev)
-                    parsed_count += 1
+                    ev_or_list = None
+                if not ev_or_list:
+                    continue
+                # Normalize to list (legacy parsers still return a single dict).
+                ev_list = ev_or_list if isinstance(ev_or_list, list) else [ev_or_list]
+                for ev in ev_list:
+                    if ev:
+                        events.append(ev)
+                        parsed_count += 1
 
             self.offsets[path] = new_offset
             self.inodes[path] = inode
@@ -2057,6 +2205,17 @@ class OpenShieldAgent:
             state_dir,
             self.log,
         )
+        # Network syslog UDP receiver (optional, off by default).
+        # Configured via agent.json: { "syslog_listen": { "enabled": true, ... } }
+        self.network_receiver = None
+        syslog_listen_cfg = self.config.get("syslog_listen") or {}
+        if syslog_listen_cfg.get("enabled") and HAS_NETWORK_SYSLOG:
+            self.network_receiver = _network_syslog.NetworkSyslogReceiver(
+                bind=syslog_listen_cfg.get("bind", "0.0.0.0"),
+                port=int(syslog_listen_cfg.get("port", 514)),
+                emit=self._emit_network_event,
+                log=self.log,
+            )
         # Identity: detected on every restart (this __init__) and refreshed
         # every hour by flush(). Bos wants identity sent on EVERY restart,
         # not just initial install — so server can track DHCP changes,
@@ -2183,6 +2342,25 @@ class OpenShieldAgent:
         )
         return True
 
+    def _emit_network_event(
+        self,
+        event_type: str,
+        severity: str,
+        source: str,
+        message: str,
+        raw_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Callback used by NetworkSyslogReceiver. Wraps the parsed
+        vendor data as a typed buffer_event with parser='network' so
+        the server-side router dispatches it to t_event_log_network.
+        """
+        if raw_data is None:
+            raw_data = {}
+        # Ensure parser tag is set (router uses rawData.parser to dispatch)
+        if "parser" not in raw_data:
+            raw_data["parser"] = "network"
+        self.buffer_event(event_type, severity, source, message, raw_data)
+
     def buffer_event(
         self,
         event_type: str,
@@ -2302,6 +2480,11 @@ class OpenShieldAgent:
         except Exception as e:
             self.log.warning(f"FIM baseline failed: {e}")
 
+        # Start network syslog receiver (if enabled in config). Runs on a
+        # dedicated daemon thread; events flow through buffer_event → flush.
+        if self.network_receiver is not None:
+            self.network_receiver.start()
+
         self.log.info(
             f"Starting main loop (heartbeat={self.heartbeat_interval}s, "
             f"batch={self.event_batch_size})"
@@ -2334,6 +2517,9 @@ class OpenShieldAgent:
                 self.logtailer._save_state()
             except Exception:
                 pass
+            # Stop network syslog receiver (closes UDP socket + joins thread)
+            if self.network_receiver is not None:
+                self.network_receiver.stop()
 
 
 # ─── CLI ───────────────────────────────────────────────────

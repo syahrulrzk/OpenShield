@@ -28,7 +28,7 @@ import { audit } from "@/lib/security/audit";
 
 const patchSchema = z.object({
   displayName: z.string().trim().min(1).max(64).optional(),
-  environment: z.enum(["PROD", "STAGING", "UAT"]).optional(),
+  environment: z.enum(["PROD", "STAGING", "UAT", "DEV", "DR"]).optional(),
   role: z.string().trim().max(64).nullable().optional(),
   location: z.string().trim().max(128).nullable().optional(),
   description: z.string().trim().max(512).nullable().optional(),
@@ -39,6 +39,18 @@ const patchSchema = z.object({
   // Poller will pick up change on next cycle. No state reset needed —
   // lastAuditEventId cursor stays valid (we read NEWER events only).
   auditConnectionLog: z.boolean().optional(),
+  // Network device fields
+  vendor: z.string().trim().max(64).nullable().optional(),
+  model: z.string().trim().max(128).nullable().optional(),
+  firmware: z.string().trim().max(128).nullable().optional(),
+  mgmtIp: z.string().trim().max(64).nullable().optional(),
+  syslogPort: z.number().int().min(1).max(65535).optional(),
+  sshEnabled: z.boolean().optional(),
+  // App fields (only when category = APP)
+  appType: z.enum(["web", "saas", "internal", "api", "mobile", "cli"]).optional(),
+  authMethod: z.enum(["oauth", "session", "jwt", "api_key", "password", "saml", "ldap"]).optional(),
+  ownerTeam: z.string().trim().max(64).nullable().optional(),
+  webhookUrl: z.string().trim().max(512).nullable().optional(),
 });
 
 const deleteSchema = z.object({
@@ -85,6 +97,16 @@ export async function PATCH(
       monitorAllDatabases: true,
       auditConnectionLog: true,
       dbType: true,
+      vendor: true,
+      model: true,
+      firmware: true,
+      mgmtIp: true,
+      syslogPort: true,
+      sshEnabled: true,
+      appType: true,
+      authMethod: true,
+      ownerTeam: true,
+      webhookUrl: true,
     },
   });
   if (!existing) {
@@ -116,6 +138,16 @@ export async function PATCH(
     "tags",
     "monitorAllDatabases",
     "auditConnectionLog",
+    "vendor",
+    "model",
+    "firmware",
+    "mgmtIp",
+    "syslogPort",
+    "sshEnabled",
+    "appType",
+    "authMethod",
+    "ownerTeam",
+    "webhookUrl",
   ] as const) {
     if (k in data) {
       const oldV = (existing as Record<string, unknown>)[k];
@@ -149,6 +181,16 @@ export async function PATCH(
       monitorAllDatabases: true,
       discoveredDatabases: true,
       auditConnectionLog: true,
+      vendor: true,
+      model: true,
+      firmware: true,
+      mgmtIp: true,
+      syslogPort: true,
+      sshEnabled: true,
+      appType: true,
+      authMethod: true,
+      ownerTeam: true,
+      webhookUrl: true,
     },
   });
 

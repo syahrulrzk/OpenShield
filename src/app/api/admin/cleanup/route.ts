@@ -27,8 +27,10 @@ const TABLES = [
   { model: "tEventLogFim", label: "fim", daysKey: SETTING_LOW, defaultDays: DEFAULT_LOW },
   { model: "tEventLogAuditd", label: "auditd", daysKey: SETTING_LOW, defaultDays: DEFAULT_LOW },
   { model: "tEventLogServerAuth", label: "server_auth", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
-  { model: "tEventLogApps", label: "apps", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
+  { model: "tEventLogAgentApps", label: "agent_apps", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
   { model: "tEventLogDatabase", label: "database", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
+  { model: "tEventLogNetwork", label: "network", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
+  { model: "tEventLogUserAccess", label: "user_access", daysKey: SETTING_HIGH, defaultDays: DEFAULT_HIGH },
 ];
 
 // ---------- Settings helpers ----------

@@ -27,7 +27,8 @@ export type EventLogType =
   | "fim"
   | "auditd"
   | "apps"
-  | "database";
+  | "database"
+  | "network"; // 2026-06-23: UDP/514 syslog from network devices
 
 /**
  * Map a rawData.parser string to the target event log table.
@@ -54,6 +55,8 @@ export function routeEventByParser(
     case "nginx_audit":
     case "apache_audit":
       return "apps";
+    case "network": // 2026-06-23: agent UDP/514 listener (Cisco/MikroTik/Fortinet/generic)
+      return "network";
     default:
       return null;
   }
@@ -109,6 +112,8 @@ export async function insertOrDedupEvent(
       return await insertAuditdEvent(agentId, e, dedupSig, eventTime, dedupStart);
     case "apps":
       return await insertAppEvent(agentId, e, dedupSig, eventTime, dedupStart);
+    case "network": // 2026-06-23
+      return await insertNetworkEvent(agentId, e, dedupSig, eventTime, dedupStart);
     case "database":
       // Database events come from poller-side, not agent. Skip if received here.
       return "skipped";
@@ -498,7 +503,7 @@ async function insertAppEvent(
   const sourceIp = typeof rawData?.ip === "string" && rawData.ip !== "localhost" ? rawData.ip : null;
   const database = typeof rawData?.database === "string" ? rawData.database : null;
 
-  const existing = await prisma.tEventLogApps.findFirst({
+  const existing = await prisma.tEventLogAgentApps.findFirst({
     where: {
       agentId,
       appName,
@@ -509,7 +514,7 @@ async function insertAppEvent(
     select: { id: true },
   });
   if (existing) {
-    await prisma.tEventLogApps.update({
+    await prisma.tEventLogAgentApps.update({
       where: { id: existing.id },
       data: {
         count: { increment: 1 },
@@ -520,7 +525,7 @@ async function insertAppEvent(
     });
     return "deduped";
   }
-  await prisma.tEventLogApps.create({
+  await prisma.tEventLogAgentApps.create({
     data: {
       agentId,
       appName,
@@ -531,6 +536,97 @@ async function insertAppEvent(
       database,
       message: e.message,
       rawData: { ...(rawData || {}), _dedupSig: dedupSig } as Prisma.InputJsonValue,
+      eventTime,
+      count: 1,
+    },
+  });
+  return "inserted";
+}
+
+// ----- Network (UDP/514 device syslog) ----- //
+// 2026-06-23: initial release. Vendor-aware parser feeds via agent's
+// NetworkSyslogReceiver → buffer_event → heartbeat with parser="network".
+async function insertNetworkEvent(
+  agentId: string,
+  e: IncomingEvent,
+  dedupSig: string,
+  eventTime: Date,
+  dedupStart: Date
+): Promise<"inserted" | "deduped"> {
+  const rawData = (e.rawData as Record<string, unknown> | undefined) ?? {};
+  const vendor = typeof rawData.vendor === "string" ? rawData.vendor : "generic";
+  const eventKind = typeof rawData.eventKind === "string" ? rawData.eventKind : "other";
+  // Source IP for identity: prefer parsed srcIp from message (e.g. Fortinet
+  // srcip=10.0.0.5), else fall back to UDP peer (set by agent as rawData.srcIp).
+  const srcIp =
+    typeof rawData.srcIpMsg === "string" && rawData.srcIpMsg
+      ? rawData.srcIpMsg
+      : typeof rawData.srcIp === "string"
+        ? rawData.srcIp
+        : "unknown";
+  // Dedup key: vendor + hostname + eventKind + srcIp. Same interface flap
+  // in a 5-min window should aggregate.
+  const hostname = typeof rawData.hostname === "string" ? rawData.hostname : null;
+  const interfaceName = typeof rawData.interface === "string" ? rawData.interface : null;
+
+  const existing = await prisma.tEventLogNetwork.findFirst({
+    where: {
+      agentId,
+      vendor,
+      srcIp,
+      eventKind,
+      ...(hostname ? { hostname } : {}),
+      ...(interfaceName ? { interface: interfaceName } : {}),
+      severity: e.severity,
+      eventTime: { gte: dedupStart },
+    },
+    select: { id: true, count: true },
+  });
+  if (existing) {
+    await prisma.tEventLogNetwork.update({
+      where: { id: existing.id },
+      data: {
+        count: { increment: 1 },
+        eventTime,
+        // Refresh message so flapping details stay current
+        description: e.message,
+        rawData: { ...rawData, _dedupSig: dedupSig } as Prisma.InputJsonValue,
+      },
+    });
+    return "deduped";
+  }
+  // Try to link to inventory asset via srcIp == Asset.mgmtIp (LAN device)
+  let assetId: string | null = null;
+  try {
+    const linked = await prisma.asset.findFirst({
+      where: {
+        category: "NETWORK",
+        mgmtIp: srcIp,
+      },
+      select: { id: true },
+    });
+    assetId = linked?.id ?? null;
+  } catch {
+    assetId = null;
+  }
+  await prisma.tEventLogNetwork.create({
+    data: {
+      agentId,
+      assetId,
+      severity: e.severity,
+      rawSeverity: typeof rawData.rawSeverity === "number" ? rawData.rawSeverity : null,
+      vendor,
+      hostname: hostname ?? srcIp,
+      srcIp,
+      inventoryMgmtIp: assetId ? srcIp : null,
+      eventKind,
+      interface: interfaceName,
+      sourceMac: typeof rawData.sourceMac === "string" ? rawData.sourceMac : null,
+      vlan: typeof rawData.vlan === "number" ? rawData.vlan : null,
+      aclRule: typeof rawData.aclRule === "string" ? rawData.aclRule : null,
+      bgpNeighborIp: typeof rawData.bgpNeighborIp === "string" ? rawData.bgpNeighborIp : null,
+      description: e.message,
+      rawData: { ...rawData, _dedupSig: dedupSig } as Prisma.InputJsonValue,
       eventTime,
       count: 1,
     },

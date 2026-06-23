@@ -105,6 +105,22 @@ model Asset {
   dbName String? @map("db_name")
   dbUser String? @map("db_user")
 
+  // ===== NETWORK DEVICE FIELDS (only filled when category = NETWORK) =====
+  // Vendor identifier — drives parser selection in agent (cisco|mikrotik|fortinet|...)
+  //   - Lowercase, normalized. Free-text for now; gateway-level validation
+  //     can be added when we ship a device-add UI.
+  // model: device model string (free-text), e.g. "Catalyst 2960-X", "CCR2216-1G-12XS-4XQ"
+  // firmware: software version, e.g. "15.7(3)M2", "RouterOS 7.14.3"
+  // mgmtIp: management IP — used for cross-check vs UDP src (anti-spoof)
+  // syslogPort: UDP port the device sends syslog to (default 514)
+  // sshEnabled: whether we can SSH to device for backup config polling (future)
+  vendor     String? @map("vendor")
+  model      String? @map("model")
+  firmware   String? @map("firmware")
+  mgmtIp     String? @map("mgmt_ip")
+  syslogPort Int     @default(514) @map("syslog_port")
+  sshEnabled Boolean @default(false) @map("ssh_enabled")
+
   // ===== MULTI-DATABASE SCAN MODE =====
   // Opsi B: instead of monitoring 1 DB, scan ALL user databases on this server
   //   - When TRUE: dbName acts as a "bootstrap" DB for the discovery query
@@ -128,6 +144,26 @@ model Asset {
   auditConnectionLog Boolean @default(false) @map("audit_connection_log")
   lastAuditEventId   BigInt? @map("last_audit_event_id") // mysql.general_log.event_time microsecond cursor
 
+  // ===== APP-SPECIFIC FIELDS (user access audit, 2026-06-23) =====
+  // appType: web | saas | internal | api | mobile | cli
+  appType         String? @map("app_type")
+  // authMethod: oauth | session | jwt | api_key | password | saml | ldap
+  authMethod      String? @map("auth_method")
+  // ownerTeam: ops/dev team contact (display only)
+  ownerTeam       String? @map("owner_team")
+  // webhookUrl: display-only — URL to configure IN the app itself
+  webhookUrl      String? @map("webhook_url")
+  // ===== API KEY (X-API-Key auth for /api/ingest/apps) =====
+  // apiKeyHash: bcrypt hash of full key (never returned, only verified on POST)
+  // apiKeyPrefix: first 8 chars of key (used as lookup index + display fingerprint)
+  // apiKeyLast4: last 4 chars (shown in UI to help user identify which key it is)
+  // Full key only shown ONCE at creation/regeneration, then unrecoverable.
+  apiKeyHash      String? @map("api_key_hash")
+  apiKeyPrefix    String? @map("api_key_prefix")
+  apiKeyLast4     String? @map("api_key_last4")
+  apiKeyCreatedAt DateTime? @map("api_key_created_at")
+  apiKeyLastUsedAt DateTime? @map("api_key_last_used_at")
+
   status     AssetStatus @default(PENDING)
   lastSeenAt DateTime?   @map("last_seen_at")
   createdAt  DateTime    @default(now()) @map("created_at")
@@ -150,6 +186,8 @@ model Asset {
   // Agent (agent-side sshd) — both nullable.
   serverAuthEvents TEventLogServerAuth[]
   databaseEvents   TEventLogDatabase[]
+  networkEvents    TEventLogNetwork[]
+  userAccessEvents TEventLogUserAccess[]
   alerts           Alert[]
 
   @@unique([userId, hostname])
@@ -161,12 +199,15 @@ model Asset {
   @@index([environment])
   @@index([role])
   @@index([displayName])
+  @@index([vendor])
+  @@index([mgmtIp])
   @@map("assets")
 }
 
 enum AssetCategory {
-  SSH // SSH login monitoring
+  SSH // SSH/login monitoring (servers)
   DATABASE // Database login monitoring (Postgres/MySQL/SQLServer)
+  NETWORK // Network device monitoring (Cisco/MikroTik/Fortinet/etc) — 2026-06-23
   APP // Application access monitoring (upcoming)
 }
 
@@ -174,6 +215,8 @@ enum Environment {
   PROD // Production (live customer-facing)
   STAGING // Pre-production mirror
   UAT // User Acceptance Testing
+  DEV // Development / lab
+  DR // Disaster recovery / standby
 }
 
 enum AssetStatus {
@@ -432,7 +475,13 @@ model TEventLogAuditd {
 // ----- APPS ----- //
 // Application-level audit logs: MySQL audit, PG audit, Redis, Nginx, Apache, etc.
 // Generic enough to host multiple app types via `appName` field.
-model TEventLogApps {
+// ----- AGENT APP LOGS (agent-based mysql/postgres/etc audit) -----
+// Schema kept for future agent-based app log forwarders (mysql general_log
+// parser, postgres pgaudit, redis audit, nginx access logs, etc).
+// Currently unused (0 rows as of 2026-06-23) — reserved for agent v1.7+
+// when app-specific parsers are added. User-access audit via webhook
+// lives in TEventLogUserAccess instead.
+model TEventLogAgentApps {
   id        String   @id @default(cuid())
   agentId   String   @map("agent_id")
   // App name, e.g. "mysql", "postgresql", "redis", "nginx"
@@ -463,7 +512,65 @@ model TEventLogApps {
   @@index([severity, eventTime(sort: Desc)])
   @@index([username, eventTime(sort: Desc)])
   @@index([sourceIp, eventTime(sort: Desc)])
-  @@map("t_event_log_apps")
+  @@map("t_event_log_agent_apps")
+}
+
+// ----- USER ACCESS AUDIT (webhook ingest via X-API-Key) -----
+// App-side forwarders send user.login / user.permission_granted / etc events
+// to POST /api/ingest/apps. Single table for ALL apps (multi-tenant via
+// assetId). Schema-light: structured cols for indexing, rawData jsonb for
+// arbitrary metadata.
+model TEventLogUserAccess {
+  id        String   @id @default(cuid())
+  assetId   String   @map("asset_id")
+
+  // ===== STRUCTURED FIELDS (indexed, queryable) =====
+  // Severity: INFO | WARN | ERROR | CRITICAL
+  severity  String   @default("INFO")
+  // Event type: user.login | user.logout | user.login_failed | user.created
+  // | user.deleted | user.role_changed | user.permission_granted
+  // | user.permission_revoked | session.created | session.expired
+  // | password.changed | password.reset_requested | mfa.enabled
+  // | mfa.disabled | custom
+  eventType String   @map("event_type")
+
+  // ===== ACTOR (the user who performed the action) =====
+  actorUserId    String? @map("actor_user_id")
+  actorEmail     String? @map("actor_email")
+  actorUsername  String? @map("actor_username")
+  actorIp        String? @map("actor_ip")
+  actorUserAgent String? @map("actor_user_agent")
+
+  // ===== TARGET (the resource/user being acted upon) =====
+  targetType String? @map("target_type")
+  targetId   String? @map("target_id")
+  targetName String? @map("target_name")
+
+  // ===== TRACING =====
+  requestId String? @map("request_id")
+  sessionId String? @map("session_id")
+
+  // ===== CONTENT =====
+  message  String
+  metadata Json?  @map("metadata")
+  rawData  Json?  @map("raw_data")
+
+  // ===== TIMING + DEDUP =====
+  eventTime DateTime @map("event_time")
+  count     Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, eventTime(sort: Desc)])
+  @@index([eventType, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@index([actorEmail, eventTime(sort: Desc)])
+  @@index([actorUserId, eventTime(sort: Desc)])
+  @@index([actorIp, eventTime(sort: Desc)])
+  @@index([targetId, eventTime(sort: Desc)])
+  @@index([eventTime(sort: Desc)])
+  @@map("t_event_log_user_access")
 }
 
 // ----- DATABASE ----- //
@@ -495,6 +602,100 @@ model TEventLogDatabase {
   @@index([status, eventTime(sort: Desc)])
   @@index([dbType, eventTime(sort: Desc)])
   @@map("t_event_log_database")
+}
+
+// ----- NETWORK (device syslog) ----- //
+// UDP/TCP 514 receiver events from network gear: switches, routers, firewalls.
+// Source: agent-side UDP listener (reborn:514 LAN-only).
+// 2026-06-23: initial release (Cisco/MikroTik/Fortinet vendor-aware parser).
+//
+// Lifecycle (one event = one syslog packet from one device):
+//   - agent receives UDP packet on port 514
+//   - vendor autodetect (cisco=%-prefix, mikrotik=<tag>, fortinet=date=...)
+//   - severity mapping (Cisco 0-7 / RFC 5424 0-7 -> ERROR|WARN|INFO)
+//   - eventKind classification (link / acl / bgp / auth / config-change / dot1x / dhcp / other)
+//   - write typed columns + rawData for full audit trail
+//
+// For polling-side ingestion (e.g. SSH to Cisco IOS `show log`), a future
+// cron poller can write to the same table with agentId=NULL.
+model TEventLogNetwork {
+  id          String   @id @default(cuid())
+  // Agent that received the UDP packet (LAN-only firewall enforced at OS layer)
+  agentId     String   @map("agent_id")
+  // Linked network device asset (when device is registered via mgmtIp/vendor)
+  // NULL = unknown device (just received packet, not in inventory yet)
+  assetId     String?  @map("asset_id")
+
+  // ===== SEVERITY (post-mapping) =====
+  // ERROR | WARN | INFO (matches dashboard severity color scheme)
+  severity  String @default("INFO")
+  // Original 0-7 from device (Cisco local7 or RFC 5424) — preserved for fidelity
+  rawSeverity Int? @map("raw_severity")
+
+  // ===== DEVICE IDENTITY =====
+  // Vendor identifier (lowercase): cisco | mikrotik | fortinet | juniper | generic
+  vendor   String @default("generic")
+  // Hostname/device name as reported in syslog header
+  hostname String
+  // Management IP — taken from UDP src address (NOT parsed from message) to
+  // prevent spoofing. Cross-checked against Asset.mgmtIp when linked.
+  srcIp    String @map("src_ip")
+  // Mgmt IP from inventory (when linked) — lets us detect spoofed packets.
+  inventoryMgmtIp String? @map("inventory_mgmt_ip")
+
+  // ===== EVENT CLASSIFICATION =====
+  // Normalized event kind (UI groups by this):
+  //   link          — interface up/down, line protocol
+  //   acl           — ACL deny / firewall block
+  //   bgp           — BGP neighbor state changes
+  //   auth          — failed/accepted login to device mgmt
+  //   config-change — user entered config mode / committed change
+  //   dot1x         — 802.1X port authentication
+  //   dhcp          — DHCP snooping / lease events
+  //   mac-flap      — MAC address flapping between ports
+  //   port-security — port-security violation / shutdown
+  //   other         — catch-all (still written, low noise)
+  eventKind String @default("other") @map("event_kind")
+
+  // ===== OPTIONAL CONTEXT (most rows have 1-3 of these) =====
+  // Interface name as reported: "Gi0/1", "ether1", "port5"
+  interface     String?
+  // Source MAC if mentioned (dot1x / dhcp-snoop / mac-flap)
+  sourceMac     String? @map("source_mac")
+  // VLAN ID if mentioned (dot1x / dhcp)
+  vlan          Int?
+  // ACL rule number / name if mentioned
+  aclRule       String? @map("acl_rule")
+  // BGP neighbor IP if mentioned
+  bgpNeighborIp String? @map("bgp_neighbor_ip")
+
+  // ===== MESSAGE =====
+  // Full parsed message (cleaned — no PRI header / no timestamps)
+  description   String
+  // Raw UDP payload for forensic / replay
+  rawData       Json    @map("raw_data")
+
+  // ===== TIMING =====
+  // When the event happened on the device (parsed from syslog timestamp)
+  // Falls back to packet receive time when not parseable.
+  eventTime DateTime @map("event_time")
+  // Dedup aggregation count (1 for first occurrence, +1 for repeats in 5-min window)
+  count     Int      @default(1)
+  // When OpenShield wrote it
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  asset Asset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, eventTime(sort: Desc)])
+  @@index([assetId, eventTime(sort: Desc)])
+  @@index([vendor, eventTime(sort: Desc)])
+  @@index([severity, eventTime(sort: Desc)])
+  @@index([eventKind, eventTime(sort: Desc)])
+  @@index([hostname, eventTime(sort: Desc)])
+  @@index([srcIp, eventTime(sort: Desc)])
+  @@index([interface, eventTime(sort: Desc)])
+  @@map("t_event_log_network")
 }
 
 enum ServerStatus {
@@ -642,7 +843,8 @@ model Agent {
   serverAuthEvents TEventLogServerAuth[]
   fimEvents        TEventLogFim[]
   auditdEvents     TEventLogAuditd[]
-  appEvents        TEventLogApps[]
+  appEvents        TEventLogAgentApps[]
+  networkEvents    TEventLogNetwork[]
 
   // Removed: @@unique([hostname, type]) — incompatible with admin-initiated
   // flow where multiple agents can run on the same host (each with own agentId).

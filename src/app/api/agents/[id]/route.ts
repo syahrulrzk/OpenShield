@@ -79,7 +79,7 @@ export async function DELETE(
       prisma.tEventLogServerAuth.deleteMany({ where: { agentId: id } }),
       prisma.tEventLogFim.deleteMany({ where: { agentId: id } }),
       prisma.tEventLogAuditd.deleteMany({ where: { agentId: id } }),
-      prisma.tEventLogApps.deleteMany({ where: { agentId: id } }),
+      prisma.tEventLogAgentApps.deleteMany({ where: { agentId: id } }),
     ]);
     await prisma.agent.delete({ where: { id } });
 
