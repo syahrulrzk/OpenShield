@@ -14,6 +14,7 @@ OpenShield is a **self-hosted security monitoring dashboard** built for small-to
 - 🔍 Detect SSH brute-force & credential-stuffing attacks
 - 🗄️ Monitor database login attempts (PostgreSQL, MySQL, SQL Server)
 - 📊 Track file integrity changes (FIM) on critical paths
+- 📱 Monitor third-party apps login events (via API integration)
 - 📜 Maintain tamper-evident audit logs for compliance
 - 🚨 Get real-time alerts on suspicious activity
 
@@ -74,6 +75,7 @@ Small infrastructure teams running Linux servers and databases face a recurring 
 | **SSH Login Tracking** | Detect successful/failed/invalid user attempts across N servers |
 | **Database Login Monitoring** | PostgreSQL, MySQL/MariaDB, SQL Server auth events |
 | **Sudo & Privilege Escalation** | Track `sudo` invocations, `su` attempts, failed auth |
+| **Third-Party App Monitoring** | Track login events from your apps via API integration |
 | **GeoIP Enrichment** | Map source IPs to country/city (planned v0.2) |
 | **Brute-Force Detection** | Alert on repeated failures from same IP/user |
 
