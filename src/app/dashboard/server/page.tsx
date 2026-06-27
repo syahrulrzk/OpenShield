@@ -460,17 +460,17 @@ export default async function ServerEventsPage({
         </div>
         <div className="flex items-center gap-3 text-xs">
           <Link
-            href="/dashboard/server"
-            className="text-[var(--muted-foreground)] hover:text-[var(--accent)] transition-colors"
-          >
-            ← SSH Events
-          </Link>
-          <Link
-            href="/dashboard/database"
-            className="text-[var(--muted-foreground)] hover:text-[var(--accent)] transition-colors"
-          >
-            Database Events →
-          </Link>
+              href="/dashboard/server"
+              className="text-[var(--muted-foreground)] hover:text-[var(--accent)] transition-colors"
+            >
+              ← SSH Events
+            </Link>
+            <Link
+              href="/dashboard/events/database"
+              className="text-[var(--muted-foreground)] hover:text-[var(--accent)] transition-colors"
+            >
+              Database Events →
+            </Link>
           <DeleteEventsButton />
         </div>
       </div>

@@ -89,7 +89,7 @@ const navGroups: NavGroup[] = [
         icon: Activity,
         children: [
           { href: "/dashboard/server", label: "Server Auth", icon: Terminal },
-          { href: "/dashboard/database", label: "Database", icon: Database },
+          { href: "/dashboard/events/database", label: "Database", icon: Database },
           {
             href: "/dashboard/events/network",
             label: "Network",
