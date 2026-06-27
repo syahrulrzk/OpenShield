@@ -164,6 +164,15 @@ model Asset {
   apiKeyCreatedAt DateTime? @map("api_key_created_at")
   apiKeyLastUsedAt DateTime? @map("api_key_last_used_at")
 
+  // ===== FEATURE TOGGLES (for poller and agent) =====
+  // Enable/disable specific features per asset
+  enableSshAuth    Boolean @default(true) @map("enable_ssh_auth")
+  enableDbAuth     Boolean @default(true) @map("enable_db_auth")
+  enableSyslog     Boolean @default(false) @map("enable_syslog")
+  enableFim        Boolean @default(false) @map("enable_fim")
+  enableAuditd     Boolean @default(false) @map("enable_auditd")
+  enableProcessMon Boolean @default(false) @map("enable_process_mon")
+
   status     AssetStatus @default(PENDING)
   lastSeenAt DateTime?   @map("last_seen_at")
   createdAt  DateTime    @default(now()) @map("created_at")
@@ -835,6 +844,15 @@ model Agent {
   config        Json?
   // Stats
   eventsSent    Int         @default(0) @map("events_sent")
+
+  // ===== FEATURE TOGGLES (for agent) =====
+  // Enable/disable specific features per agent
+  enableSyslog     Boolean @default(true) @map("enable_syslog")
+  enableSshAuth    Boolean @default(true) @map("enable_ssh_auth")
+  enableFim        Boolean @default(false) @map("enable_fim")
+  enableAuditd     Boolean @default(false) @map("enable_auditd")
+  enableProcessMon Boolean @default(false) @map("enable_process_mon")
+  enableNetwork    Boolean @default(false) @map("enable_network")
 
   // 6 per-type event log relations (replaces single AgentEvent[]).
   // Each event type has its own table for cleaner separation, per-type
