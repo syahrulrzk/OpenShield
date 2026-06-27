@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Search, MoreVertical, Trash2, Key, Power, PowerOff, Box } from "lucide-react";
 import { AppApiKeyModal } from "./app-api-key-modal";
+import { AddAppModal } from "./add-app-modal";
 
 export type App = {
   id: string;
@@ -60,6 +61,7 @@ export function AppsTable({
     mode: "generate" | "regenerate" | "delete";
     app: App | null;
   }>({ open: false, mode: "generate", app: null });
+  const [addModalOpen, setAddModalOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
   const filtered = apps.filter((a) => {
@@ -123,12 +125,12 @@ export function AppsTable({
           ))}
         </select>
         <button
-          onClick={() => router.push("/dashboard/assets")}
-          className="ml-auto px-3 py-2 bg-violet-500 hover:bg-violet-600 text-white rounded-md text-sm flex items-center gap-1.5"
-        >
-          <Plus className="h-4 w-4" />
-          New App
-        </button>
+              onClick={() => setAddModalOpen(true)}
+              className="ml-auto px-3 py-2 bg-violet-500 hover:bg-violet-600 text-white rounded-md text-sm flex items-center gap-1.5"
+            >
+              <Plus className="h-4 w-4" />
+              New App
+            </button>
       </div>
 
       {/* Table */}
@@ -156,11 +158,11 @@ export function AppsTable({
                       <Box className="h-8 w-8 mx-auto mb-2 text-zinc-300" />
                       <div>No apps configured yet</div>
                       <button
-                        onClick={() => router.push("/dashboard/assets")}
-                        className="mt-2 text-violet-500 hover:underline text-xs"
-                      >
-                        Add your first app →
-                      </button>
+                onClick={() => setAddModalOpen(true)}
+                className="mt-2 text-violet-500 hover:underline text-xs"
+              >
+                Add your first app →
+              </button>
                     </div>
                   ) : (
                     "No apps match your filters"
@@ -329,6 +331,17 @@ export function AppsTable({
           existingPrefix={keyModal.app.apiKeyPrefix}
           existingLast4={keyModal.app.apiKeyLast4}
           onClose={() => setKeyModal({ open: false, mode: "generate", app: null })}
+        />
+      )}
+
+      {/* Add app modal */}
+      {addModalOpen && (
+        <AddAppModal
+          onClose={() => setAddModalOpen(false)}
+          onCreated={() => {
+            setAddModalOpen(false);
+            router.refresh();
+          }}
         />
       )}
     </div>

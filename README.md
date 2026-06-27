@@ -649,6 +649,8 @@ What OpenShield shows:
 
 ### Local Setup
 
+#### Option 1: Manual (Recommended for Active Development)
+
 ```bash
 # 1. Install dependencies
 npm install
@@ -667,6 +669,32 @@ npm run dev
 
 # Open http://localhost:3001
 ```
+
+#### Option 2: Systemd Service (Persistent Background Dev Server)
+
+Ada systemd service untuk menjaga dev server berjalan otomatis:
+
+```bash
+# Start service
+sudo systemctl start openshield-dev.service
+
+# Check status
+sudo systemctl status openshield-dev.service
+
+# Stop service
+sudo systemctl stop openshield-dev.service
+
+# Disable auto-start on boot
+sudo systemctl disable openshield-dev.service
+
+# Enable auto-start on boot
+sudo systemctl enable openshield-dev.service
+
+# View logs
+sudo journalctl -u openshield-dev.service -f
+```
+
+Service ini menjalankan `pnpm dev` di port 3001 dengan Turbopack.
 
 ### Development Scripts
 

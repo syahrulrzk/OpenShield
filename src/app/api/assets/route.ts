@@ -74,7 +74,7 @@ const createSchema = z
     sshEnabled: z.boolean().optional().default(false),
     // App fields (only used when category = APP) — webhook ingest target
     appType: z.enum(["web", "saas", "internal", "api", "mobile", "cli"]).optional(),
-    authMethod: z.enum(["oauth", "session", "jwt", "api_key", "password", "saml", "ldap"]).optional(),
+    authMethod: z.string().trim().max(64).optional(),
     ownerTeam: z.string().trim().max(64).optional(),
     webhookUrl: z.string().trim().max(512).optional(),
   })

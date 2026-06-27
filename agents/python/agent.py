@@ -72,21 +72,6 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-# Network syslog receiver (UDP/514) — vendored module sitting next to agent.py
-# in /opt/openshield-agent/. Imports are lazy so the receiver is only loaded
-# when `syslog_listen.enabled=true` is in the config (default OFF).
-try:
-    import network_syslog as _network_syslog  # type: ignore
-    HAS_NETWORK_SYSLOG = True
-except ImportError:
-    _network_syslog = None  # type: ignore
-    HAS_NETWORK_SYSLOG = False
-
-try:
-    import threading  # noqa: F401  # used by NetworkSyslogReceiver
-except ImportError:
-    pass
-
 VERSION = "1.6.0"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
@@ -2205,17 +2190,6 @@ class OpenShieldAgent:
             state_dir,
             self.log,
         )
-        # Network syslog UDP receiver (optional, off by default).
-        # Configured via agent.json: { "syslog_listen": { "enabled": true, ... } }
-        self.network_receiver = None
-        syslog_listen_cfg = self.config.get("syslog_listen") or {}
-        if syslog_listen_cfg.get("enabled") and HAS_NETWORK_SYSLOG:
-            self.network_receiver = _network_syslog.NetworkSyslogReceiver(
-                bind=syslog_listen_cfg.get("bind", "0.0.0.0"),
-                port=int(syslog_listen_cfg.get("port", 514)),
-                emit=self._emit_network_event,
-                log=self.log,
-            )
         # Identity: detected on every restart (this __init__) and refreshed
         # every hour by flush(). Bos wants identity sent on EVERY restart,
         # not just initial install — so server can track DHCP changes,
@@ -2342,25 +2316,6 @@ class OpenShieldAgent:
         )
         return True
 
-    def _emit_network_event(
-        self,
-        event_type: str,
-        severity: str,
-        source: str,
-        message: str,
-        raw_data: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Callback used by NetworkSyslogReceiver. Wraps the parsed
-        vendor data as a typed buffer_event with parser='network' so
-        the server-side router dispatches it to t_event_log_network.
-        """
-        if raw_data is None:
-            raw_data = {}
-        # Ensure parser tag is set (router uses rawData.parser to dispatch)
-        if "parser" not in raw_data:
-            raw_data["parser"] = "network"
-        self.buffer_event(event_type, severity, source, message, raw_data)
-
     def buffer_event(
         self,
         event_type: str,
@@ -2480,11 +2435,6 @@ class OpenShieldAgent:
         except Exception as e:
             self.log.warning(f"FIM baseline failed: {e}")
 
-        # Start network syslog receiver (if enabled in config). Runs on a
-        # dedicated daemon thread; events flow through buffer_event → flush.
-        if self.network_receiver is not None:
-            self.network_receiver.start()
-
         self.log.info(
             f"Starting main loop (heartbeat={self.heartbeat_interval}s, "
             f"batch={self.event_batch_size})"
@@ -2517,9 +2467,6 @@ class OpenShieldAgent:
                 self.logtailer._save_state()
             except Exception:
                 pass
-            # Stop network syslog receiver (closes UDP socket + joins thread)
-            if self.network_receiver is not None:
-                self.network_receiver.stop()
 
 
 # ─── CLI ───────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   Terminal,
   Bell,
   ShieldCheck,
+  ShieldOff,
   Settings,
   Menu,
   FileSpreadsheet,
@@ -28,6 +29,7 @@ import {
   Network as NetworkIcon,
   Router,
   Server,
+  Box,
 } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
 import { PulseDot } from "@/components/animations";
@@ -78,6 +80,7 @@ const navGroups: NavGroup[] = [
           { href: "/dashboard/agents", label: "Servers", icon: Server },
           { href: "/dashboard/network", label: "Network", icon: Router },
           { href: "/dashboard/database", label: "Database", icon: Database },
+          { href: "/dashboard/apps", label: "Apps", icon: Box },
         ],
       },
       {
@@ -91,6 +94,11 @@ const navGroups: NavGroup[] = [
             href: "/dashboard/events/network",
             label: "Network",
             icon: NetworkIcon,
+          },
+          {
+            href: "/dashboard/events/apps",
+            label: "Apps",
+            icon: Box,
           },
           {
             href: "/dashboard/events/syslog",
