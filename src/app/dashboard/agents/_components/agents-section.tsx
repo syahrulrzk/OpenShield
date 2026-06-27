@@ -53,7 +53,19 @@ type Agent = {
   lastError: string | null;
   registeredAt: string;
   eventsSent: number;
-  _count: { events: number };
+  enableSyslog: boolean;
+  enableSshAuth: boolean;
+  enableFim: boolean;
+  enableAuditd: boolean;
+  enableProcessMon: boolean;
+  enableNetwork: boolean;
+  _count: { 
+    syslogEvents: number; 
+    serverAuthEvents: number; 
+    fimEvents: number; 
+    auditdEvents: number; 
+    appEvents: number; 
+  };
 };
 
 // Shared env styling — used by the Env badge in the table, the filter
@@ -210,16 +222,25 @@ export function AgentsSection() {
 
   // ── Edit Agent ────────────────────────────────────────────────
 
-  // ── Edit name + environment ────────────────────────────────
-  // Two cosmetic fields admins frequently want to fix:
-  //   - name: rename a server without SSH'ing into it (e.g. friendly
-  //     alias like "db-prod-primary" instead of "ip-10-1-1-50")
-  //   - environment: reclassify after promotion/demotion or when the
-  //     original choice was a placeholder
-  // Both go through PATCH /api/agents/[id] which writes an audit row.
+  // ── Edit name + environment + feature toggles ─────────────────
   const [editTarget, setEditTarget] = useState<Agent | null>(null);
   const [editName, setEditName] = useState("");
   const [editEnv, setEditEnv] = useState<AgentEnv>("PROD");
+  const [editToggles, setEditToggles] = useState<{
+    enableSyslog: boolean;
+    enableSshAuth: boolean;
+    enableFim: boolean;
+    enableAuditd: boolean;
+    enableProcessMon: boolean;
+    enableNetwork: boolean;
+  }>({
+    enableSyslog: true,
+    enableSshAuth: true,
+    enableFim: false,
+    enableAuditd: false,
+    enableProcessMon: false,
+    enableNetwork: false,
+  });
   const [editBusy, setEditBusy] = useState(false);
   const [editErr, setEditErr] = useState<string | null>(null);
 
@@ -227,6 +248,14 @@ export function AgentsSection() {
     setEditTarget(a);
     setEditName(a.name);
     setEditEnv(a.environment);
+    setEditToggles({
+      enableSyslog: a.enableSyslog,
+      enableSshAuth: a.enableSshAuth,
+      enableFim: a.enableFim,
+      enableAuditd: a.enableAuditd,
+      enableProcessMon: a.enableProcessMon,
+      enableNetwork: a.enableNetwork,
+    });
     setEditErr(null);
   };
 
@@ -252,12 +281,13 @@ export function AgentsSection() {
         body: JSON.stringify({
           name: trimmed,
           environment: editEnv,
+          ...editToggles,
         }),
       });
       const data = await r.json();
       if (data.ok) {
         toast.success(
-          `Agent updated: "${trimmed}" → ${editEnv}` +
+          `Agent updated: "${trimmed}"` +
             (data.unchanged ? " (no changes)" : "")
         );
         setEditTarget(null);
@@ -865,7 +895,7 @@ export function AgentsSection() {
               <span className="text-zinc-600">·</span>{" "}
               <span className="font-mono">{editTarget.ip ?? "—"}</span>
             </p>
-            <form onSubmit={submitEdit} className="space-y-3">
+            <form onSubmit={submitEdit} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">
                   Name
@@ -916,6 +946,39 @@ export function AgentsSection() {
                   filtering and the env badge color across the dashboard.
                 </p>
               </div>
+              
+              <div className="border-t border-zinc-800 pt-3">
+                <label className="block text-xs font-medium text-zinc-400 mb-2">
+                  Feature Toggles
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { key: "enableSshAuth" as const, label: "SSH Auth", desc: "Monitor SSH login attempts" },
+                    { key: "enableSyslog" as const, label: "Syslog", desc: "Monitor system logs" },
+                    { key: "enableFim" as const, label: "FIM", desc: "File Integrity Monitoring" },
+                    { key: "enableAuditd" as const, label: "Auditd", desc: "Linux auditd monitoring" },
+                    { key: "enableProcessMon" as const, label: "Process Monitor", desc: "Process monitoring" },
+                    { key: "enableNetwork" as const, label: "Network Events", desc: "Network device events" },
+                  ].map(({ key, label, desc }) => (
+                    <label 
+                      key={key} 
+                      className="flex items-center gap-2 p-2 rounded border border-zinc-800 hover:border-zinc-700 transition cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={editToggles[key]}
+                        onChange={(e) => setEditToggles({ ...editToggles, [key]: e.target.checked })}
+                        className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-violet-500 focus:ring-offset-zinc-900"
+                      />
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-zinc-200">{label}</div>
+                        <div className="text-[9px] text-zinc-500">{desc}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              
               {editErr && (
                 <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
                   {editErr}

@@ -33,6 +33,13 @@ const patchSchema = z.object({
   // was created before its true env was known, or after a server is
   // promoted/demoted. Matches the Environment enum in prisma/schema.prisma.
   environment: z.enum(["PROD", "STAGING", "UAT"]).optional(),
+  // Feature toggles
+  enableSyslog: z.boolean().optional(),
+  enableSshAuth: z.boolean().optional(),
+  enableFim: z.boolean().optional(),
+  enableAuditd: z.boolean().optional(),
+  enableProcessMon: z.boolean().optional(),
+  enableNetwork: z.boolean().optional(),
 });
 
 export async function DELETE(
@@ -175,6 +182,31 @@ export async function PATCH(
   if (body.environment !== undefined && body.environment !== agent.environment) {
     diff.environment = { from: agent.environment, to: body.environment };
     data.environment = body.environment;
+  }
+  // Feature toggles
+  if (body.enableSyslog !== undefined && body.enableSyslog !== agent.enableSyslog) {
+    diff.enableSyslog = { from: agent.enableSyslog, to: body.enableSyslog };
+    data.enableSyslog = body.enableSyslog;
+  }
+  if (body.enableSshAuth !== undefined && body.enableSshAuth !== agent.enableSshAuth) {
+    diff.enableSshAuth = { from: agent.enableSshAuth, to: body.enableSshAuth };
+    data.enableSshAuth = body.enableSshAuth;
+  }
+  if (body.enableFim !== undefined && body.enableFim !== agent.enableFim) {
+    diff.enableFim = { from: agent.enableFim, to: body.enableFim };
+    data.enableFim = body.enableFim;
+  }
+  if (body.enableAuditd !== undefined && body.enableAuditd !== agent.enableAuditd) {
+    diff.enableAuditd = { from: agent.enableAuditd, to: body.enableAuditd };
+    data.enableAuditd = body.enableAuditd;
+  }
+  if (body.enableProcessMon !== undefined && body.enableProcessMon !== agent.enableProcessMon) {
+    diff.enableProcessMon = { from: agent.enableProcessMon, to: body.enableProcessMon };
+    data.enableProcessMon = body.enableProcessMon;
+  }
+  if (body.enableNetwork !== undefined && body.enableNetwork !== agent.enableNetwork) {
+    diff.enableNetwork = { from: agent.enableNetwork, to: body.enableNetwork };
+    data.enableNetwork = body.enableNetwork;
   }
 
   if (Object.keys(data).length === 0) {

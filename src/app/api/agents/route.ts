@@ -53,6 +53,12 @@ export async function GET(_req: NextRequest) {
       registeredAt: true,
       revokedAt: true,
       eventsSent: true,
+      enableSyslog: true,
+      enableSshAuth: true,
+      enableFim: true,
+      enableAuditd: true,
+      enableProcessMon: true,
+      enableNetwork: true,
       _count: {
         select: {
           syslogEvents: true,

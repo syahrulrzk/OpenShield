@@ -266,7 +266,18 @@ export async function POST(req: NextRequest) {
   const agent = await prisma.agent.update({
     where: { id: agentId },
     data: updateData,
-    select: { id: true, config: true, hostname: true, ip: true },
+    select: { 
+      id: true, 
+      config: true, 
+      hostname: true, 
+      ip: true,
+      enableSyslog: true,
+      enableSshAuth: true,
+      enableFim: true,
+      enableAuditd: true,
+      enableProcessMon: true,
+      enableNetwork: true,
+    },
   });
 
   // 5. Return agent config + ACK
@@ -286,6 +297,14 @@ export async function POST(req: NextRequest) {
     agentId,
     status: "ONLINE",
     config,
+    features: {
+      enableSyslog: agent.enableSyslog,
+      enableSshAuth: agent.enableSshAuth,
+      enableFim: agent.enableFim,
+      enableAuditd: agent.enableAuditd,
+      enableProcessMon: agent.enableProcessMon,
+      enableNetwork: agent.enableNetwork,
+    },
     stats,
     // Version compatibility info — agent uses this to decide whether
     // to log a "self-update available" hint. Dashboard also reads this.
