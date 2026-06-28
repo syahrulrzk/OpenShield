@@ -71,7 +71,7 @@ export async function GET(_req: NextRequest) {
     },
   });
 
-  // Compute effective status (stale/offline detection)
+  // Compute effective status (stale/offline detection) and total events
   const now = Date.now();
   const enriched = agents.map((a) => {
     let effective = a.status;
@@ -80,7 +80,8 @@ export async function GET(_req: NextRequest) {
       if (ageSec > 600) effective = "OFFLINE";
       else if (ageSec > 120) effective = "STALE";
     }
-    return { ...a, effectiveStatus: effective };
+    const totalEvents = a._count.syslogEvents + a._count.serverAuthEvents + a._count.fimEvents + a._count.auditdEvents + a._count.appEvents;
+    return { ...a, effectiveStatus: effective, _count: { ...a._count, events: totalEvents } };
   });
 
   return NextResponse.json({ ok: true, agents: enriched });

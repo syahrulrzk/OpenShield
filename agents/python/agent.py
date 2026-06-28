@@ -72,7 +72,7 @@ except ImportError:
     HAS_PSUTIL = False
     psutil = None  # type: ignore[assignment]  # noqa: F821
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 USER_AGENT = f"OpenShield-Python-Agent/{VERSION}"
 
 # ─── Logger ─────────────────────────────────────────────────
@@ -2200,6 +2200,7 @@ class OpenShieldAgent:
         self._refresh_identity(force=True)
 
         self.event_buffer: List[Dict[str, Any]] = []
+        self._flush_failed_this_tick = False
         self.running = True
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -2332,7 +2333,9 @@ class OpenShieldAgent:
             "rawData": raw_data,
             "eventTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
-        if len(self.event_buffer) >= self.event_batch_size:
+        if len(self.event_buffer) > 5000:
+            self.event_buffer = self.event_buffer[-5000:]
+        if len(self.event_buffer) >= self.event_batch_size and not self._flush_failed_this_tick:
             self.flush()
 
     def _refresh_identity(self, force: bool = False) -> None:
@@ -2369,44 +2372,67 @@ class OpenShieldAgent:
         # Refresh identity if > 1 hour since last detect (handles DHCP lease
         # renewal, IP rotation, hostname changes mid-flight)
         self._refresh_identity()
-        # Convert internal snake_case keys to server-expected camelCase
-        # (buffer_event uses snake_case kwargs, server Zod schema uses camelCase)
-        server_events = []
-        for ev in self.event_buffer:
-            server_events.append({
-                "eventType": ev.get("event_type") or ev.get("eventType"),
-                "severity": ev["severity"],
-                "source": ev["source"],
-                "message": ev["message"],
-                "rawData": ev.get("raw_data") if ev.get("raw_data") is not None else ev.get("rawData"),
-                "eventTime": ev["eventTime"],
-            })
-        body_obj = {
-            "version": VERSION,
-            "events": server_events,
-            "stats": get_system_stats(),
-        }
-        # Always include identity block on EVERY heartbeat so server tracks
-        # hostname/IP changes (DHCP, IP rotation, multi-NIC). Even empty
-        # identity gets sent — server detects "no identity" vs "stale data".
-        body_obj["identity"] = self._identity or {}
-        body = json.dumps(body_obj)
-        sig = sign_body(self.secret_token, body)
-        headers = {
-            "X-Openshield-Agent-Id": self.agent_id,
-            "X-Openshield-Agent-Signature": sig,
-        }
-        ok, data = self._request("POST", "/api/agents/heartbeat", body, headers)
-        if ok:
-            stats = data.get("stats", {})
-            self.log.info(
-                f"Heartbeat OK (events={len(self.event_buffer)} "
-                f"inserted={stats.get('eventsInserted', 0)} "
-                f"deduped={stats.get('eventsDeduped', 0)})"
-            )
-            self.event_buffer = []
+
+        if not self.event_buffer:
+            body_obj = {
+                "version": VERSION,
+                "events": [],
+                "stats": get_system_stats(),
+                "identity": self._identity or {},
+            }
+            body = json.dumps(body_obj)
+            sig = sign_body(self.secret_token, body)
+            headers = {
+                "X-Openshield-Agent-Id": self.agent_id,
+                "X-Openshield-Agent-Signature": sig,
+            }
+            ok, data = self._request("POST", "/api/agents/heartbeat", body, headers)
+            if not ok:
+                self._flush_failed_this_tick = True
+                return False
             return True
-        return False
+
+        batch_size = min(self.event_batch_size, 500)
+        if batch_size < 1:
+            batch_size = 100
+
+        while self.event_buffer:
+            chunk = self.event_buffer[:batch_size]
+            server_events = []
+            for ev in chunk:
+                server_events.append({
+                    "eventType": ev.get("event_type") or ev.get("eventType"),
+                    "severity": ev["severity"],
+                    "source": ev["source"],
+                    "message": ev["message"],
+                    "rawData": ev.get("raw_data") if ev.get("raw_data") is not None else ev.get("rawData"),
+                    "eventTime": ev["eventTime"],
+                })
+            body_obj = {
+                "version": VERSION,
+                "events": server_events,
+                "stats": get_system_stats(),
+                "identity": self._identity or {},
+            }
+            body = json.dumps(body_obj)
+            sig = sign_body(self.secret_token, body)
+            headers = {
+                "X-Openshield-Agent-Id": self.agent_id,
+                "X-Openshield-Agent-Signature": sig,
+            }
+            ok, data = self._request("POST", "/api/agents/heartbeat", body, headers)
+            if ok:
+                stats = data.get("stats", {})
+                self.log.info(
+                    f"Heartbeat OK (events={len(chunk)} "
+                    f"inserted={stats.get('eventsInserted', 0)} "
+                    f"deduped={stats.get('eventsDeduped', 0)})"
+                )
+                self.event_buffer = self.event_buffer[len(chunk):]
+            else:
+                self._flush_failed_this_tick = True
+                return False
+        return True
 
     def run(self) -> None:
         if not self.agent_id:
@@ -2441,6 +2467,7 @@ class OpenShieldAgent:
         )
         try:
             while self.running:
+                self._flush_failed_this_tick = False
                 # 1. FIM check
                 for ev in self.fim.check():
                     self.buffer_event(**ev)
@@ -2451,7 +2478,8 @@ class OpenShieldAgent:
                 for ev in self.logtailer.tick():
                     self.buffer_event(**ev)
                 # 3. Heartbeat (with or without events)
-                self.flush()
+                if not self._flush_failed_this_tick:
+                    self.flush()
                 # 4. Sleep
                 for _ in range(self.heartbeat_interval):
                     if not self.running:

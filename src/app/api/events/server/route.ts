@@ -544,7 +544,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const [rawEvents, total] = await Promise.all([
+  const [rawEvents] = await Promise.all([
     prisma.tEventLogServerAuth.findMany({
       where,
       orderBy: { eventTime: "desc" },
@@ -565,7 +565,6 @@ export async function GET(req: NextRequest) {
         agent: { select: { name: true, hostname: true, ip: true } },
       },
     }),
-    prisma.tEventLogServerAuth.count({ where: baseWhere }),
   ]);
 
   // 2026-06-21 refactor: events already come from tEventLogServerAuth (auth-only).
@@ -573,6 +572,7 @@ export async function GET(req: NextRequest) {
   // Session grouping: 1 SSH session emits 3-6 events. Group by
   // (sourceIp, sourcePort) and keep highest-priority event as primary.
   const grouped = groupBySession(rawEvents as RawServerAuthRow[]);
+  const total = grouped.length;
 
   // Map status directly (tEventLogServerAuth.status is ServerStatus enum).
   // Map INVALID → "DENIED" for backward compat with UI status filter.

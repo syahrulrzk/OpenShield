@@ -17,7 +17,7 @@
 
 export const AGENT_COMPAT = {
   min: "1.0.0",
-  latest: "1.6.0",
+  latest: "1.6.1",
 };
 
 /**

@@ -333,7 +333,7 @@ export default async function ServerEventsPage({
     ...(andClauses.length > 0 ? { AND: andClauses } : {}),
   };
 
-  const [rawEvents, total] = await Promise.all([
+  const [rawEvents] = await Promise.all([
     prisma.tEventLogServerAuth.findMany({
       where,
       orderBy: { eventTime: "desc" },
@@ -354,7 +354,6 @@ export default async function ServerEventsPage({
         agent: { select: { name: true, hostname: true, ip: true } },
       },
     }),
-    prisma.tEventLogServerAuth.count({ where: baseWhere }),
   ]);
 
   // Session grouping: 1 SSH session emits 3-5 events (connection, accepted,
@@ -364,6 +363,7 @@ export default async function ServerEventsPage({
   // (accepted > sftp/scp/shell_session > command_session > connection).
   // Other events in the same group are summarised in `sessionSubsessions`.
   const grouped = groupBySession(rawEvents);
+  const total = grouped.length;
 
   // Map tEventLogServerAuth → ServerEvent-like shape for ServerEventsContent
   const eventsWithStatus = grouped.map((e) => {

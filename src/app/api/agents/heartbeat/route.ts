@@ -38,76 +38,7 @@ const agentEventSchema = z.object({
   // server never saw syslog.* values. Now that the agent respects the
   // param (see agents/python/agent.py SyslogParser._make_event fix),
   // we have to whitelist every category the agent can emit.
-  eventType: z.enum([
-    "log.line",
-    "file.change",
-    "process.new",
-    "metric.system",
-    "custom",
-    // ── SyslogParser categories (2026-06-22) ──────────────────────
-    "syslog.sshd",
-    "syslog.sudo",
-    "syslog.su",
-    "syslog.pam",
-    "syslog.user_change",
-    "syslog.privilege",
-    "syslog.session",
-    "syslog.service.started",
-    "syslog.service.failed",
-    "syslog.service.stopped",
-    "syslog.cron.job",
-    "syslog.cron.edit",
-    "syslog.cron.scheduled",
-    "syslog.network.link",
-    "syslog.firewall.blocked",
-    "syslog.network.dhcp",
-    "syslog.docker.container",
-    "syslog.docker.error",
-    "syslog.disk.full",
-    "syslog.disk.error",
-    "syslog.usb.device",
-    "syslog.kernel.panic",
-    "syslog.kernel.segfault",
-    "syslog.hardware.error",
-    "syslog.package.install",
-    "syslog.boot.started",
-    "syslog.boot.lifecycle",
-    "syslog.boot.kernel",
-    "syslog.boot.shutdown",
-    "syslog.bruteforce",
-    "syslog.malformed",
-    // ── Network syslog (2026-06-23) ─────────────────────────────────────
-    // agent.py NetworkSyslogReceiver emits these via parser="network"
-    // (cisco|mikrotik|fortinet|generic) × eventKind (link|acl|bgp|auth|
-    // config-change|dot1x|dhcp|mac-flap|port-security|routing|other).
-    "network.cisco.link",
-    "network.cisco.acl",
-    "network.cisco.bgp",
-    "network.cisco.auth",
-    "network.cisco.config-change",
-    "network.cisco.dot1x",
-    "network.cisco.dhcp",
-    "network.cisco.mac-flap",
-    "network.cisco.port-security",
-    "network.cisco.routing",
-    "network.cisco.other",
-    "network.mikrotik.link",
-    "network.mikrotik.acl",
-    "network.mikrotik.bgp",
-    "network.mikrotik.auth",
-    "network.mikrotik.config-change",
-    "network.mikrotik.dhcp",
-    "network.mikrotik.routing",
-    "network.mikrotik.system",
-    "network.mikrotik.other",
-    "network.fortinet.link",
-    "network.fortinet.acl",
-    "network.fortinet.bgp",
-    "network.fortinet.auth",
-    "network.fortinet.config-change",
-    "network.fortinet.other",
-    "network.generic.other",
-  ]),
+  eventType: z.string(),
   severity: z.enum(["INFO", "WARN", "ERROR", "CRITICAL"]).default("INFO"),
   source: z.string().min(1).max(512),
   message: z.string().min(1).max(2048),
@@ -215,6 +146,7 @@ export async function POST(req: NextRequest) {
 
   // 2. Parse body
   let body: z.infer<typeof heartbeatSchema>;
+  console.log("[heartbeat] Received raw body:", rawBody);
   try {
     body = heartbeatSchema.parse(JSON.parse(rawBody));
   } catch (err) {

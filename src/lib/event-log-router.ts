@@ -76,6 +76,29 @@ export async function insertOrDedupEvent(
     return "skipped";
   }
 
+  // Look up agent to check feature toggles
+  const agent = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: {
+      name: true,
+      enableSyslog: true,
+      enableSshAuth: true,
+      enableFim: true,
+      enableAuditd: true,
+      enableProcessMon: true,
+      enableNetwork: true,
+    },
+  });
+
+  if (!agent) return "skipped";
+
+  // Check feature toggles before inserting event
+  if (target === "syslog" && !agent.enableSyslog) return "skipped";
+  if (target === "server_auth" && !agent.enableSshAuth) return "skipped";
+  if (target === "fim" && !agent.enableFim) return "skipped";
+  if (target === "auditd" && !agent.enableAuditd) return "skipped";
+  if (target === "network" && !agent.enableNetwork) return "skipped";
+
   // Compute dedup signature (shared logic, see heartbeat/route.ts extractDedupKey)
   const dedupUser = extractDedupKey(e.rawData, e.message);
   const eventKind =
@@ -87,19 +110,8 @@ export async function insertOrDedupEvent(
   const eventTime = new Date(e.eventTime);
   const dedupStart = new Date(eventTime.getTime() - DEDUP_WINDOW_MS);
 
-  // 2026-06-22: Look up agentName once per batch so insertSyslogEvent can
-  // populate the denormalized column. Cheap (single indexed lookup, then
-  // shared across all events in the batch). Avoids N+1 queries.
-  let cachedAgentName: string | null = null;
-  try {
-    const agent = await prisma.agent.findUnique({
-      where: { id: agentId },
-      select: { name: true },
-    });
-    cachedAgentName = agent?.name ?? null;
-  } catch {
-    // best-effort: if agent lookup fails, events still insert with agentName=null
-  }
+  // Use agent name from earlier lookup
+  const cachedAgentName = agent?.name ?? null;
 
   switch (target) {
     case "syslog":

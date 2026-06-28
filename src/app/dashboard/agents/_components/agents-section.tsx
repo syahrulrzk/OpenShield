@@ -380,7 +380,12 @@ export function AgentsSection() {
     setIsRefreshing(true);
     try {
       const r = await fetch("/api/agents", { credentials: "include" });
-      const data = await r.json();
+      let data;
+      try {
+        data = await r.json();
+      } catch {
+        throw new Error(`Invalid response from server (HTTP ${r.status})`);
+      }
       if (!r.ok || !data.ok) {
         throw new Error(data.error || `HTTP ${r.status}`);
       }
@@ -764,7 +769,7 @@ export function AgentsSection() {
                       {a.ip || <span className="text-zinc-600">—</span>}
                     </td>
                     <td className="px-4 py-2.5 text-center text-zinc-300 font-mono">
-                      {a._count.events}
+                      {a._count.syslogEvents + a._count.serverAuthEvents + a._count.fimEvents + a._count.auditdEvents + a._count.appEvents}
                     </td>
                     <td className="px-4 py-2.5 text-center text-zinc-500 text-xs">
                       {a.lastHeartbeat
@@ -1065,7 +1070,7 @@ export function AgentsSection() {
             <>
               Agent <span className="font-mono text-zinc-100">{deleteTarget.name}</span> akan
               <span className="text-red-400 font-semibold"> dihapus permanent dari database</span>{" "}
-              bersama semua event-nya (<span className="font-mono">{deleteTarget._count.events}</span>).
+              bersama semua event-nya (<span className="font-mono">{deleteTarget._count.syslogEvents + deleteTarget._count.serverAuthEvents + deleteTarget._count.fimEvents + deleteTarget._count.auditdEvents + deleteTarget._count.appEvents}</span>).
               Snapshot tetap tersimpan di audit log untuk compliance.
             </>
           ) : null
